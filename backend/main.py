@@ -1,5 +1,8 @@
 """FastAPI backend for the PRANA mobile app."""
 
+import os
+import time
+from collections import defaultdict
 from contextlib import redirect_stdout
 from datetime import datetime
 from io import StringIO
@@ -7,10 +10,15 @@ from pathlib import Path
 import sys
 from typing import Any, Dict, Optional
 
-from fastapi import FastAPI, HTTPException, status
+from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.concurrency import run_in_threadpool
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
+from backend.logger import get_logger
+
+logger = get_logger("api")
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -18,6 +26,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from config import OPENAQ_API_KEY, OPENWEATHER_API_KEY, UPDATE_INTERVAL  # noqa: E402
 from prana_system import PRANASystem  # noqa: E402
+from backend.database import load_nighttime_temps, save_nighttime_temps  # noqa: E402
 
 
 app = FastAPI(
@@ -25,6 +34,40 @@ app = FastAPI(
     description="Backend API for PRANA climate risk results and mobile dashboard data.",
     version="0.1.0",
 )
+
+_cors_origins = os.getenv("CORS_ORIGINS", "*").split(",")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_cors_origins,
+    allow_credentials=_cors_origins != ["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+# ---------------------------------------------------------------------------
+# Simple in-memory rate limiter
+# ---------------------------------------------------------------------------
+
+_RATE_LIMIT = int(os.getenv("RATE_LIMIT_PER_MINUTE", "60"))
+_window_store: dict = defaultdict(list)
+
+
+@app.middleware("http")
+async def rate_limit_middleware(request: Request, call_next):
+    client_ip = request.client.host if request.client else "unknown"
+    now = time.time()
+    window = _window_store[client_ip]
+    cutoff = now - 60
+    window[:] = [t for t in window if t > cutoff]
+    if len(window) >= _RATE_LIMIT:
+        logger.warning("Rate limit hit for %s", client_ip)
+        return JSONResponse(
+            status_code=429,
+            content={"detail": "Too many requests. Please try again in a minute."},
+        )
+    window.append(now)
+    return await call_next(request)
 
 
 class RiskRequest(BaseModel):
@@ -39,6 +82,9 @@ class RiskRequest(BaseModel):
     )
     sleep_checkin: Optional[dict] = Field(
         None, description="Structured sleep check-in from WhatsApp."
+    )
+    onboarding_data: Optional[dict] = Field(
+        None, description="Home profile: {ac: bool, roof_material: str, floor_level: str}"
     )
 
 
@@ -77,16 +123,28 @@ async def calculate_current_risk(payload: RiskRequest) -> RiskResponse:
 
 
 def _run_prana_pipeline(payload: RiskRequest):
+    # Load persisted nighttime temps for this location
+    past_temps = load_nighttime_temps(payload.lat, payload.lon)
+
     prana = PRANASystem(
         api_key=OPENWEATHER_API_KEY,
         location_name=payload.location_name,
         urban_heat_offset=payload.urban_heat_offset,
         openaq_api_key=OPENAQ_API_KEY,
+        onboarding_data=payload.onboarding_data,
     )
+
+    # Seed RDS calculator with persisted history
+    if past_temps:
+        prana.rds_calculator.nighttime_temps = past_temps
 
     stdout = StringIO()
     with redirect_stdout(stdout):
         result = prana.update_all(payload.lat, payload.lon, sleep_checkin=payload.sleep_checkin)
+
+    # Persist updated nighttime temps for next call
+    if result:
+        save_nighttime_temps(payload.lat, payload.lon, prana.rds_calculator.nighttime_temps)
 
     return result, stdout.getvalue()
 

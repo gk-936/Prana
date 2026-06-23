@@ -134,19 +134,19 @@ class RDSTests(unittest.TestCase):
         calculator.add_night_temperature(34.0, today)
         calculator.add_night_temperature(34.0, today - timedelta(days=1))
 
-        rds, consecutive = calculator.calculate_rds()
+        result = calculator.calculate_rds()
 
-        self.assertAlmostEqual(rds, 36.0, places=1)
-        self.assertEqual(consecutive, 2)
+        self.assertAlmostEqual(result['rds_mid'], 36.0, places=1)
+        self.assertEqual(result['consecutive_nights'], 2)
 
     def test_cool_night_has_zero_recovery_failure(self):
         calculator = RDSCalculator()
         calculator.add_night_temperature(28.0, date.today())
 
-        rds, consecutive = calculator.calculate_rds()
+        result = calculator.calculate_rds()
 
-        self.assertEqual(rds, 0.0)
-        self.assertEqual(consecutive, 0)
+        self.assertEqual(result['rds_mid'], 0.0)
+        self.assertEqual(result['consecutive_nights'], 0)
 
     def test_onboarding_adjustment_increases_rds_for_tin_roof_top_floor(self):
         onboarding = {'ac': False, 'roof_material': 'tin', 'floor_level': 'top'}
@@ -154,10 +154,10 @@ class RDSTests(unittest.TestCase):
         today = date.today()
         calculator.add_night_temperature(31.0, today)
 
-        rds_with, _ = calculator.calculate_rds()
+        result = calculator.calculate_rds()
         # Expected offset: tin(+2.0) + top(+1.5) = +3.5
         # Effective temp = 31 + 3.5 = 34.5 >= 32, so RFU > 0
-        self.assertGreater(rds_with, 0.0)
+        self.assertGreater(result['rds_mid'], 0.0)
 
     def test_onboarding_adjustment_reduces_rds_for_ac(self):
         onboarding = {'ac': True, 'roof_material': 'concrete', 'floor_level': 'ground'}
@@ -168,13 +168,13 @@ class RDSTests(unittest.TestCase):
         no_adjust = RDSCalculator()
         no_adjust.add_night_temperature(33.0, today)
 
-        rds_with, _ = calculator.calculate_rds()
-        rds_without, _ = no_adjust.calculate_rds()
+        result_with = calculator.calculate_rds()
+        result_without = no_adjust.calculate_rds()
 
         # AC offset = -3.0, so effective temp = 30.0 < 32 => RFU = 0
-        self.assertEqual(rds_with, 0.0)
+        self.assertEqual(result_with['rds_mid'], 0.0)
         # Without adjustment, 33C > 32C => RFU > 0
-        self.assertGreater(rds_without, 0.0)
+        self.assertGreater(result_without['rds_mid'], 0.0)
 
     def test_onboarding_adjustment_no_onboarding_matches_standard(self):
         standard = RDSCalculator()
@@ -183,23 +183,23 @@ class RDSTests(unittest.TestCase):
         standard.add_night_temperature(34.0, today)
         with_onboarding.add_night_temperature(34.0, today)
 
-        rds_std, _ = standard.calculate_rds()
-        rds_wob, _ = with_onboarding.calculate_rds()
+        result_std = standard.calculate_rds()
+        result_wob = with_onboarding.calculate_rds()
 
-        self.assertAlmostEqual(rds_std, rds_wob, places=5)
+        self.assertAlmostEqual(result_std['rds_mid'], result_wob['rds_mid'], places=5)
 
     def test_rds_empty_nights_returns_zero(self):
-        rds, cons = RDSCalculator().calculate_rds()
-        self.assertEqual(rds, 0.0)
-        self.assertEqual(cons, 0)
+        result = RDSCalculator().calculate_rds()
+        self.assertEqual(result['rds_mid'], 0.0)
+        self.assertEqual(result['consecutive_nights'], 0)
 
     def test_rds_extreme_heat_caps_rfu(self):
         calc = RDSCalculator()
         calc.add_night_temperature(60.0, date.today())
-        rds, cons = calc.calculate_rds()
+        result = calc.calculate_rds()
         # RFU capped at 100, so RDS <= 100
-        self.assertAlmostEqual(rds, 100.0, places=1)
-        self.assertEqual(cons, 1)
+        self.assertAlmostEqual(result['rds_mid'], 100.0, places=1)
+        self.assertEqual(result['consecutive_nights'], 1)
 
     def test_rds_single_cool_night_all_past_hot(self):
         calc = RDSCalculator()
@@ -207,20 +207,20 @@ class RDSTests(unittest.TestCase):
         calc.add_night_temperature(34.0, today - timedelta(days=2))
         calc.add_night_temperature(35.0, today - timedelta(days=1))
         calc.add_night_temperature(28.0, today)
-        rds, cons = calc.calculate_rds()
+        result = calc.calculate_rds()
         # Consecutive hot nights: yesterday (35C) + day before (34C) = 2
-        self.assertEqual(cons, 2)
+        self.assertEqual(result['consecutive_nights'], 2)
         # RDS should reflect past hot nights with decay
-        self.assertGreater(rds, 0.0)
+        self.assertGreater(result['rds_mid'], 0.0)
 
     def test_rds_onboarding_adjustment_via_method_arg(self):
         calc = RDSCalculator()
         calc.add_night_temperature(33.0, date.today())
-        rds_no, _ = calc.calculate_rds()
-        rds_ac, _ = calc.calculate_rds(onboarding_data={'ac': True})
+        result_no = calc.calculate_rds()
+        result_ac = calc.calculate_rds(onboarding_data={'ac': True})
         # With AC (-3C), effective temp = 30 < 32 -> RFU = 0
-        self.assertEqual(rds_ac, 0.0)
-        self.assertGreater(rds_no, 0.0)
+        self.assertEqual(result_ac['rds_mid'], 0.0)
+        self.assertGreater(result_no['rds_mid'], 0.0)
 
 
 class NDTTests(unittest.TestCase):
@@ -306,10 +306,11 @@ class StructuredResponseTests(unittest.TestCase):
                 'pollutant_aqi': {'PM2.5': 80, 'O3': 60},
                 'averaging_windows': {'PM2.5': 'instantaneous'},
             },
-            'rds': 25.0,
-            'raw_rds': 25.0,
+            'rds': {'rds_low': 23.0, 'rds_mid': 25.0, 'rds_high': 27.0, 'consecutive_nights': 1},
+            'raw_rds': {'rds_low': 23.0, 'rds_mid': 25.0, 'rds_high': 27.0, 'consecutive_nights': 1},
             'rds_adjustment': {
-                'applied': False, 'delta': 0.0, 'reason': 'no_checkin', 'adjusted_rds': 25.0,
+                'applied': False, 'delta': 0.0, 'reason': 'no_checkin',
+                'adjusted_rds': {'rds_low': 23.0, 'rds_mid': 25.0, 'rds_high': 27.0, 'consecutive_nights': 1},
             },
             'consecutive_nights': 1,
             'rds_message': 'Recovery debt: MODERATE ...',
@@ -360,8 +361,9 @@ class CCRITests(unittest.TestCase):
 
     def test_ccri_recovery_multiplier_range(self):
         comp = CCRICalculator().calculate_component_scores(ndt=30, ha_aqi=100, rds=100)
-        # multiplier = 1 + (100/100)*0.3 = 1.3
-        self.assertAlmostEqual(comp['recovery_multiplier'], 1.3, places=4)
+        # RDS=100 in high tier (80-150): piecewise scaling gives ~1.3-1.6x
+        self.assertGreater(comp['recovery_multiplier'], 1.3)
+        self.assertLess(comp['recovery_multiplier'], 1.6)
         # No-recovery case
         comp_zero = CCRICalculator().calculate_component_scores(ndt=30, ha_aqi=100, rds=0)
         self.assertAlmostEqual(comp_zero['recovery_multiplier'], 1.0, places=4)

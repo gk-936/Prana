@@ -20,6 +20,10 @@ class HAAQICalculator:
         """
         Calculate PRANA heat-pollution risk with ozone-specific heat adjustment.
 
+        The ozone heat factor is only applied when O3 AQI >= threshold (default 50).
+        At low ozone concentrations, the chemistry is NOx-limited rather than
+        temperature-limited, so heat-ozone coupling does not apply.
+
         `heat_pollution_risk` is PRANA custom, not an official AQI.
         """
         pollutant_aqi = pollutant_aqi or {}
@@ -39,9 +43,15 @@ class HAAQICalculator:
 
         ozone_heat_factor = self.calculate_ozone_amplification_factor(temp_c)
         ozone_aqi = pollutant_aqi.get('O3')
-        ozone_heat_adjusted_aqi = ozone_aqi * ozone_heat_factor if ozone_aqi is not None else None
+        
+        # Only apply heat factor when O3 AQI is elevated (>= threshold)
+        # Below this, ozone chemistry is NOx-limited, not temperature-limited
+        if ozone_aqi is not None and ozone_aqi >= OZONE_HEAT_COUPLING_THRESHOLD_AQI:
+            ozone_heat_adjusted_aqi = ozone_aqi * ozone_heat_factor
+        else:
+            ozone_heat_adjusted_aqi = ozone_aqi if ozone_aqi is not None else None
 
-        if ozone_aqi is not None and ozone_heat_adjusted_aqi is not None:
+        if ozone_aqi is not None and ozone_heat_adjusted_aqi is not None and ozone_aqi >= OZONE_HEAT_COUPLING_THRESHOLD_AQI:
             ozone_increment = (ozone_heat_adjusted_aqi - ozone_aqi) * OAF_BLEND_WEIGHT
             heat_pollution_risk = base_aqi + ozone_increment
         else:

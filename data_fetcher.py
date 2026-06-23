@@ -1,14 +1,78 @@
 """Fetch climate and air quality data from public APIs"""
+import time
 import requests
 import numpy as np
 from datetime import datetime, timedelta
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 from config import *
+from backend.logger import get_logger
+
+logger = get_logger("data_fetcher")
+
+
+def _requests_retry_session(retries=3, backoff=0.5):
+    session = requests.Session()
+    retry = Retry(
+        total=retries,
+        read=retries,
+        connect=retries,
+        backoff_factor=backoff,
+        status_forcelist=[429, 500, 502, 503, 504],
+    )
+    adapter = HTTPAdapter(max_retries=retry)
+    session.mount("http://", adapter)
+    session.mount("https://", adapter)
+    return session
 
 
 class DataFetcher:
     def __init__(self, api_key, openaq_api_key=None):
         self.api_key = api_key
         self.openaq_api_key = openaq_api_key or OPENAQ_API_KEY
+        self._session = _requests_retry_session()
+
+    def _get_satellite_radiation(self, lat, lon):
+        """
+        Get current shortwave radiation from Open-Meteo Satellite API.
+        
+        This provides satellite-observed radiation (JMA Himawari-9 for Asia),
+        which is more precise than model-derived estimates. Archive endpoint
+        only supports current-day data, not future forecasts.
+        
+        Returns shortwave_radiation value (W/m²) or None if unavailable.
+        """
+        today = datetime.now().date()
+        params = {
+            'latitude': lat,
+            'longitude': lon,
+            'hourly': 'shortwave_radiation',
+            'models': 'satellite_radiation_seamless',
+            'start_date': today.isoformat(),
+            'end_date': today.isoformat(),
+        }
+        
+        try:
+            response = self._session.get(OPENMETEO_SATELLITE_RADIATION_URL, params=params, timeout=10)
+            response.raise_for_status()
+            data = response.json()
+            
+            # Get the most recent non-None value from today's hourly data
+            hourly = data.get('hourly', {})
+            radiation_values = hourly.get('shortwave_radiation', [])
+            
+            # Satellite data has ~30 min processing delay, so recent hours may be None
+            # Find the most recent non-None value
+            for val in reversed(radiation_values):
+                if val is not None:
+                    logger.info("Satellite radiation: %.1f W/m²", val)
+                    return val
+            
+            logger.warning("Satellite radiation: all values None (processing delay)")
+            return None
+        except requests.exceptions.RequestException as e:
+            logger.debug("Satellite radiation unavailable: %s", e)
+            return None
 
     def get_current_weather(self, lat, lon):
         """Get current weather data, preferring Open-Meteo and falling back to OpenWeatherMap."""
@@ -17,7 +81,7 @@ class DataFetcher:
             return weather
 
         if not self.api_key:
-            print("WARNING: Open-Meteo weather failed and OPENWEATHER_API_KEY is not set")
+            logger.warning("Open-Meteo weather failed and OPENWEATHER_API_KEY is not set")
             return None
 
         return self._get_openweather_current_weather(lat, lon)
@@ -34,11 +98,21 @@ class DataFetcher:
             'wind_speed_unit': 'ms'
         }
         try:
-            response = requests.get(OPENMETEO_FORECAST_URL, params=params, timeout=10)
+            response = self._session.get(OPENMETEO_FORECAST_URL, params=params, timeout=10)
             response.raise_for_status()
             data = response.json()
             current = data.get('current', {})
             hourly = data.get('hourly', {})
+            
+            # Get model-derived shortwave radiation as baseline
+            model_radiation = _first_hourly_value(hourly, 'shortwave_radiation')
+            
+            # Upgrade to satellite-observed radiation if available
+            satellite_radiation = self._get_satellite_radiation(lat, lon)
+            shortwave_radiation = satellite_radiation if satellite_radiation is not None else model_radiation
+            
+            if satellite_radiation is not None:
+                logger.info("Using satellite-observed radiation (upgraded from model)")
 
             return {
                 'temp': current['temperature_2m'],
@@ -46,14 +120,17 @@ class DataFetcher:
                 'pressure': current.get('surface_pressure', 1013.25),
                 'wind_speed': current.get('wind_speed_10m', 0.5),
                 'wet_bulb_temp': _first_hourly_value(hourly, 'wet_bulb_temperature_2m'),
-                'shortwave_radiation': _first_hourly_value(hourly, 'shortwave_radiation'),
+                'shortwave_radiation': shortwave_radiation,
                 'direct_radiation': _first_hourly_value(hourly, 'direct_radiation'),
                 'diffuse_radiation': _first_hourly_value(hourly, 'diffuse_radiation'),
                 'timestamp': _parse_openmeteo_time(current.get('time')),
                 'source': 'open-meteo'
             }
-        except Exception as e:
-            print(f"WARNING: Open-Meteo weather failed: {e}")
+        except requests.exceptions.Timeout:
+            logger.error("Open-Meteo weather request timed out")
+            return None
+        except requests.exceptions.RequestException as e:
+            logger.warning("Open-Meteo weather failed: %s", e)
             return None
 
     def _get_openweather_current_weather(self, lat, lon):
@@ -65,14 +142,20 @@ class DataFetcher:
             'units': 'metric'
         }
         try:
-            response = requests.get(OPENWEATHER_URL, params=params, timeout=10)
+            response = self._session.get(OPENWEATHER_URL, params=params, timeout=10)
 
             if response.status_code == 401:
-                print("ERROR: Invalid OpenWeatherMap API key")
-                return None
+                logger.error("Invalid OpenWeatherMap API key")
+                return {
+                    'error': 'invalid_api_key',
+                    'message': 'OpenWeatherMap API key is invalid'
+                }
             elif response.status_code == 429:
-                print("ERROR: OpenWeatherMap API rate limit exceeded")
-                return None
+                logger.error("OpenWeatherMap API rate limit exceeded")
+                return {
+                    'error': 'rate_limited',
+                    'message': 'OpenWeatherMap rate limit exceeded'
+                }
 
             response.raise_for_status()
             data = response.json()
@@ -86,25 +169,25 @@ class DataFetcher:
                 'source': 'openweathermap'
             }
         except requests.exceptions.Timeout:
-            print("ERROR: OpenWeatherMap request timed out.")
+            logger.error("OpenWeatherMap request timed out")
             return None
         except requests.exceptions.RequestException as e:
-            print(f"ERROR: OpenWeatherMap network error - {e}")
+            logger.error("OpenWeatherMap network error - %s", e)
             return None
 
-    def get_forecast(self, lat, lon, hours=24):
+    def get_forecast(self, lat, lon, hours=24, past_days=0):
         """Get weather forecast, preferring Open-Meteo and falling back to OpenWeatherMap."""
-        forecast = self._get_openmeteo_forecast(lat, lon, hours)
+        forecast = self._get_openmeteo_forecast(lat, lon, hours, past_days)
         if forecast:
             return forecast
 
         if not self.api_key:
-            print("WARNING: Open-Meteo forecast failed and OPENWEATHER_API_KEY is not set")
+            logger.warning("Open-Meteo forecast failed and OPENWEATHER_API_KEY is not set")
             return None
 
         return self._get_openweather_forecast(lat, lon, hours)
 
-    def _get_openmeteo_forecast(self, lat, lon, hours=24):
+    def _get_openmeteo_forecast(self, lat, lon, hours=24, past_days=0):
         """Get hourly forecast from Open-Meteo without an API key."""
         params = {
             'latitude': lat,
@@ -114,11 +197,12 @@ class DataFetcher:
                 'wet_bulb_temperature_2m,shortwave_radiation,direct_radiation,diffuse_radiation'
             ),
             'forecast_hours': hours,
+            'past_days': past_days,
             'timezone': 'auto',
             'wind_speed_unit': 'ms'
         }
         try:
-            response = requests.get(OPENMETEO_FORECAST_URL, params=params, timeout=10)
+            response = self._session.get(OPENMETEO_FORECAST_URL, params=params, timeout=10)
             response.raise_for_status()
             data = response.json()
             hourly = data.get('hourly', {})
@@ -140,8 +224,11 @@ class DataFetcher:
                 })
 
             return forecasts
-        except Exception as e:
-            print(f"WARNING: Open-Meteo forecast failed: {e}")
+        except requests.exceptions.Timeout:
+            logger.error("Open-Meteo forecast timed out")
+            return None
+        except requests.exceptions.RequestException as e:
+            logger.warning("Open-Meteo forecast failed: %s", e)
             return None
 
     def _get_openweather_forecast(self, lat, lon, hours=24):
@@ -153,7 +240,7 @@ class DataFetcher:
             'units': 'metric'
         }
         try:
-            response = requests.get(OPENWEATHER_FORECAST_URL, params=params, timeout=10)
+            response = self._session.get(OPENWEATHER_FORECAST_URL, params=params, timeout=10)
             response.raise_for_status()
             data = response.json()
 
@@ -167,8 +254,11 @@ class DataFetcher:
                     'source': 'openweathermap'
                 })
             return forecasts
-        except Exception as e:
-            print(f"WARNING: OpenWeatherMap forecast failed: {e}")
+        except requests.exceptions.Timeout:
+            logger.error("OpenWeatherMap forecast timed out")
+            return None
+        except requests.exceptions.RequestException as e:
+            logger.warning("OpenWeatherMap forecast failed: %s", e)
             return None
 
     def get_air_quality(self, lat, lon, radius_km=25):
@@ -196,7 +286,7 @@ class DataFetcher:
             'timezone': 'auto'
         }
         try:
-            response = requests.get(OPENMETEO_AIR_QUALITY_URL, params=params, timeout=10)
+            response = self._session.get(OPENMETEO_AIR_QUALITY_URL, params=params, timeout=10)
             response.raise_for_status()
             data = response.json()
             current = data.get('current', {})
@@ -229,18 +319,21 @@ class DataFetcher:
 
             pollutants = {k: v for k, v in pollutants.items() if v.get('value') is not None}
             if pollutants:
-                print(f"  [OK] Open-Meteo air quality: {', '.join(pollutants.keys())}")
+                logger.info("Open-Meteo air quality: %s", ', '.join(pollutants.keys()))
                 return pollutants
 
             return None
-        except Exception as e:
-            print(f"WARNING: Open-Meteo air quality failed: {e}")
+        except requests.exceptions.Timeout:
+            logger.error("Open-Meteo air quality timed out")
+            return None
+        except requests.exceptions.RequestException as e:
+            logger.warning("Open-Meteo air quality failed: %s", e)
             return None
 
     def _get_openaq_air_quality(self, lat, lon, radius_km=25):
         """Get air quality data from OpenAQ v3 API."""
         if not self.openaq_api_key:
-            print("WARNING: OpenAQ API key not set - skipping air quality data")
+            logger.warning("OpenAQ API key not set - skipping air quality data")
             return None
 
         headers = {'X-API-Key': self.openaq_api_key}
@@ -252,29 +345,29 @@ class DataFetcher:
                 'limit': 5
             }
 
-            response = requests.get(OPENAQ_URL, headers=headers, params=params, timeout=10)
+            response = self._session.get(OPENAQ_URL, headers=headers, params=params, timeout=10)
 
             if response.status_code == 401:
-                print("WARNING: OpenAQ API key invalid")
+                logger.warning("OpenAQ API key invalid")
                 return None
             elif response.status_code == 410:
-                print("WARNING: OpenAQ v2 endpoint retired - using v3")
+                logger.warning("OpenAQ endpoint retired")
                 return None
 
             response.raise_for_status()
             locations_data = response.json()
 
             if not locations_data.get('results'):
-                print(f"  No air quality monitoring stations within {radius_km}km")
+                logger.info("No air quality monitoring stations within %skm", radius_km)
                 return None
 
             location = locations_data['results'][0]
             location_id = location['id']
             location_name = location.get('name', 'Unknown')
-            print(f"  Found station: {location_name} (ID: {location_id})")
+            logger.info("Found station: %s (ID: %s)", location_name, location_id)
 
             location_detail_url = f"https://api.openaq.org/v3/locations/{location_id}"
-            loc_response = requests.get(location_detail_url, headers=headers, timeout=10)
+            loc_response = self._session.get(location_detail_url, headers=headers, timeout=10)
             loc_response.raise_for_status()
             loc_data = loc_response.json()
 
@@ -295,7 +388,7 @@ class DataFetcher:
                 s_params = {'limit': 1, 'order_by': 'datetime', 'sort_order': 'desc'}
 
                 try:
-                    sensor_response = requests.get(
+                    sensor_response = self._session.get(
                         sensor_measurements_url, headers=headers, params=s_params, timeout=5
                     )
                     if sensor_response.status_code != 200:
@@ -315,20 +408,21 @@ class DataFetcher:
                             'source': 'openaq',
                             'averaging_window': 'instantaneous'
                         }
-                except Exception:
+                except requests.exceptions.RequestException:
+                    logger.debug("Failed to fetch sensor %s data", sensor_id, exc_info=True)
                     continue
 
             if pollutants:
-                print(f"  [OK] OpenAQ measurements: {', '.join(pollutants.keys())}")
+                logger.info("OpenAQ measurements: %s", ', '.join(pollutants.keys()))
                 return pollutants
 
             return None
 
         except requests.exceptions.Timeout:
-            print("WARNING: OpenAQ request timed out")
+            logger.warning("OpenAQ request timed out")
             return None
         except requests.exceptions.RequestException as e:
-            print(f"WARNING: OpenAQ error: {e}")
+            logger.warning("OpenAQ error: %s", e)
             return None
 
     def calculate_aqi_from_pollutants(self, pollutants):
@@ -363,7 +457,7 @@ class DataFetcher:
             if pollutant_aqi:
                 dominant_pollutant, _ = max(pollutant_aqi.items(), key=lambda x: x[1])
             if debug:
-                print(f"  -> Overall AQI: {provider_aqi:.0f} (from Open-Meteo US AQI)")
+                logger.debug("Overall AQI: %.0f (from Open-Meteo US AQI)", provider_aqi)
             return {
                 'base_aqi': provider_aqi,
                 'dominant_pollutant': dominant_pollutant or 'provider_aqi',
@@ -386,7 +480,7 @@ class DataFetcher:
 
         dominant_pollutant, base_aqi = max(pollutant_aqi.items(), key=lambda x: x[1])
         if debug:
-            print(f"  -> Overall AQI: {base_aqi:.0f} (limited by {dominant_pollutant})")
+            logger.debug("Overall AQI: %.0f (limited by %s)", base_aqi, dominant_pollutant)
 
         return {
             'base_aqi': base_aqi,
@@ -408,7 +502,7 @@ class DataFetcher:
         averaging_windows = {}
 
         if debug:
-            print("  Calculating AQI from pollutants:")
+            logger.debug("Calculating AQI from pollutants:")
 
         # PM2.5 — NowCast when history available, instantaneous fallback
         pm25_key = 'pm25' if 'pm25' in pollutants else ('pm2.5' if 'pm2.5' in pollutants else None)
@@ -427,7 +521,7 @@ class DataFetcher:
                 pollutant_aqi['PM2.5'] = pm25_aqi
                 averaging_windows['PM2.5'] = window
                 if debug:
-                    print(f"    PM2.5: {pm25_conc:.1f} ug/m3 [{window}] -> AQI {pm25_aqi:.0f}")
+                    logger.debug("PM2.5: %.1f ug/m3 [%s] -> AQI %.0f", pm25_conc, window, pm25_aqi)
 
         # PM10 — instantaneous
         if 'pm10' in pollutants:
@@ -438,7 +532,7 @@ class DataFetcher:
                 pollutant_aqi['PM10'] = pm10_aqi
                 averaging_windows['PM10'] = 'instantaneous'
                 if debug:
-                    print(f"    PM10: {entry['value']} ug/m3 -> AQI {pm10_aqi:.0f}")
+                    logger.debug("PM10: %s ug/m3 -> AQI %.0f", entry['value'], pm10_aqi)
 
         # Ozone
         if 'o3' in pollutants:
@@ -450,7 +544,7 @@ class DataFetcher:
             pollutant_aqi['O3'] = o3_aqi
             averaging_windows['O3'] = 'instantaneous'
             if debug:
-                print(f"    O3: {o3_value} {unit} ({o3_ppm:.3f} ppm) -> AQI {o3_aqi:.0f}")
+                logger.debug("O3: %s %s (%.3f ppm) -> AQI %.0f", o3_value, unit, o3_ppm, o3_aqi)
 
         # CO
         if 'co' in pollutants:
@@ -469,7 +563,7 @@ class DataFetcher:
             pollutant_aqi['CO'] = co_aqi
             averaging_windows['CO'] = 'instantaneous'
             if debug:
-                print(f"    CO: {co_value} {unit} ({co_ppm:.2f} ppm) -> AQI {co_aqi:.0f}")
+                logger.debug("CO: %s %s (%.2f ppm) -> AQI %.0f", co_value, unit, co_ppm, co_aqi)
 
         # NO2
         if 'no2' in pollutants:
@@ -481,7 +575,7 @@ class DataFetcher:
             pollutant_aqi['NO2'] = no2_aqi
             averaging_windows['NO2'] = 'instantaneous'
             if debug:
-                print(f"    NO2: {no2_value} {unit} ({no2_ppb:.1f} ppb) -> AQI {no2_aqi:.0f}")
+                logger.debug("NO2: %s %s (%.1f ppb) -> AQI %.0f", no2_value, unit, no2_ppb, no2_aqi)
 
         return pollutant_aqi, averaging_windows
 

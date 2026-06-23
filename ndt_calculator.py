@@ -41,12 +41,29 @@ class NDTCalculator:
         """
         Estimate globe temperature (approximation for outdoor conditions)
         
+        KNOWN LIMITATION: This is a simplified approximation with the following failure modes:
+        - Overstates heat stress for people in shade or indoors
+        - Understates heat stress on hot surfaces (asphalt, metal) in still air
+        - Does not account for solar position, surface reflectivity, or time of day
+        
+        A full implementation would require solar position modeling and surface-type
+        classification, which is out of scope for the current prototype.
+        
+        ADDITIONAL NOTE ON SHORTWAVE RADIATION DATA:
+        - Open-Meteo shortwave_radiation values (both model-derived and satellite-observed)
+          represent a backward average over the PRECEDING hour, not an instantaneous value.
+        - For fast-changing conditions (sunrise/sunset, passing clouds), this introduces
+          a slight lag (~30 min on average).
+        - Per Open-Meteo docs, backward-averaged data is preferred for heat stress
+          calculations; instant values are meant for direct sensor comparison.
+        
         Globe temp is typically 2-8°C higher than air temp in direct sun.
         For simplicity, using empirical formula based on wind speed.
         
         Args:
             temp_c: Air temperature in Celsius
             wind_speed_ms: Wind speed in m/s
+            shortwave_radiation: Measured/modeled shortwave radiation (W/m²) if available
         
         Returns:
             Globe temperature in Celsius

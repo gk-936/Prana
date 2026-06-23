@@ -18,6 +18,9 @@ from config import (
     OPENROUTER_BASE_URL,
     OPENROUTER_MODEL,
 )
+from backend.logger import get_logger
+
+_log = get_logger("llm")
 
 
 @dataclass
@@ -52,7 +55,7 @@ class LLMClient:
             return self._chat_openrouter(messages, temperature)
         except Exception as error:
             if self.ollama_model:
-                print(f"WARNING: OpenRouter failed, falling back to Ollama: {error}")
+                _log.warning("OpenRouter failed, falling back to Ollama: %s", error)
                 return self._chat_ollama(messages, temperature)
             raise
 

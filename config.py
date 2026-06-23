@@ -29,6 +29,7 @@ DATABASE_URL = os.getenv('DATABASE_URL', 'sqlite:///./prana.db')
 # API Endpoints
 OPENMETEO_FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
 OPENMETEO_AIR_QUALITY_URL = "https://air-quality-api.open-meteo.com/v1/air-quality"
+OPENMETEO_SATELLITE_RADIATION_URL = "https://satellite-api.open-meteo.com/v1/archive"
 OPENWEATHER_URL = "https://api.openweathermap.org/data/2.5/weather"
 OPENWEATHER_FORECAST_URL = "https://api.openweathermap.org/data/2.5/forecast"
 OPENAQ_URL = "https://api.openaq.org/v3/locations"  # v3 locations endpoint
@@ -43,6 +44,7 @@ WBGT_TD_COEFF = 0.1  # Dry bulb temperature
 OAF_BASE_TEMP = 25.0  # Celsius
 OAF_COEFFICIENT = 0.04
 OAF_BLEND_WEIGHT = 0.5  # Weight for heat-driven ozone increment blended into base AQI
+OZONE_HEAT_COUPLING_THRESHOLD_AQI = 50  # Only apply heat factor when O3 AQI >= this (NOx-limited below)
 
 # Recovery Debt Score
 RDS_NIGHTTIME_THRESHOLD = 32.0  # Celsius - no recovery above this
@@ -51,6 +53,7 @@ RDS_MAX_DAYS = 7  # Track last 7 nights
 RDS_ONBOARDING_AC_OFFSET = -3.0  # degC: effective indoor temp reduction from AC (PROTOTYPE_ASSUMPTION)
 RDS_ONBOARDING_TIN_ROOF_OFFSET = 2.0  # degC: additional indoor heat from tin roof (PROTOTYPE_ASSUMPTION)
 RDS_ONBOARDING_TOP_FLOOR_OFFSET = 1.5  # degC: additional indoor heat from top floor unshaded (PROTOTYPE_ASSUMPTION)
+RDS_INDOOR_OFFSET_BAND_WIDTH = 2.0  # degC, ± band around onboarding offset estimate
 
 # CCRI Thresholds
 CCRI_SAFE = 20

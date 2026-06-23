@@ -17,6 +17,9 @@ from rds_calculator import RDSCalculator
 from ccri_calculator import CCRICalculator
 from config import *
 from uhi_lookup import lookup_uhi_offset
+from backend.logger import get_logger
+
+logger = get_logger("prana_system")
 
 
 class PRANASystem:
@@ -44,36 +47,37 @@ class PRANASystem:
         Returns:
             Dict with all metrics and alert message
         """
-        print(f"\n{'='*60}")
-        print(f"PRANA SYSTEM UPDATE - {self.location_name}")
-        print(f"{'='*60}\n")
+        logger.info("=" * 60)
+        logger.info("PRANA SYSTEM UPDATE - %s", self.location_name)
+        logger.info("=" * 60)
 
         # Step 1: Fetch current weather
-        print("Step 1: Fetching current weather data...")
+        logger.info("Step 1: Fetching current weather data...")
         weather = self.data_fetcher.get_current_weather(lat, lon)
         if not weather:
-            print("[FAIL] Failed to fetch weather data")
+            logger.error("Failed to fetch weather data")
             return None
-        print(f"[OK] Weather: {weather['temp']:.1f}C, {weather['humidity']:.0f}% humidity")
+        logger.info("Weather: %.1fC, %.0f%% humidity", weather['temp'], weather['humidity'])
 
-        # Step 2: Fetch weather forecast
-        print("\nStep 2: Fetching weather forecast...")
-        forecast = self.data_fetcher.get_forecast(lat, lon, hours=24)
+        # Step 2: Fetch weather forecast (include past days for RDS history)
+        logger.info("Step 2: Fetching weather forecast...")
+        past_days = RDS_MAX_DAYS if not self.rds_calculator.nighttime_temps else 0
+        forecast = self.data_fetcher.get_forecast(lat, lon, hours=24, past_days=past_days)
         if not forecast:
-            print("[FAIL] Failed to fetch forecast")
+            logger.error("Failed to fetch forecast")
             return None
-        print(f"[OK] Forecast: {len(forecast)} data points retrieved")
+        logger.info("Forecast: %s data points retrieved", len(forecast))
 
         # Step 3: Calculate NDT
-        print("\nStep 3: Calculating NDT (WBGT + urban heat island)...")
+        logger.info("Step 3: Calculating NDT (WBGT + urban heat island)...")
         ndt = self.ndt_calculator.calculate_ndt(weather)
         heat_level, heat_desc = self.ndt_calculator.get_heat_stress_level(ndt)
         self.current_ndt = ndt
-        print(f"[OK] NDT: {ndt:.1f}C")
-        print(f"  Heat Stress: {heat_level} - {heat_desc}")
+        logger.info("NDT: %.1fC", ndt)
+        logger.info("  Heat Stress: %s - %s", heat_level, heat_desc)
 
         # Step 4: Fetch air quality and calculate heat-pollution risk
-        print("\nStep 4: Calculating heat-pollution risk (ozone-specific heat adjustment)...")
+        logger.info("Step 4: Calculating heat-pollution risk (ozone-specific heat adjustment)...")
         pollutants = self.data_fetcher.get_air_quality(lat, lon)
         aqi_components = {
             'base_aqi': None,
@@ -96,62 +100,75 @@ class PRANASystem:
                 ha_aqi = heat_pollution['heat_pollution_risk']
                 aqi_category, aqi_desc = self.ha_aqi_calculator.get_aqi_category(ha_aqi)
                 self.current_ha_aqi = ha_aqi
-                print(f"[OK] Base AQI: {base_aqi:.0f}")
-                print(f"[OK] Dominant pollutant: {aqi_components['dominant_pollutant']}")
-                print(f"[OK] Ozone heat factor: {oaf:.2f}x at {weather['temp']:.1f}C")
-                print(f"[OK] Heat-pollution risk: {ha_aqi:.0f} ({aqi_category})")
-                print(f"  {aqi_desc}")
+                logger.info("Base AQI: %.0f", base_aqi)
+                logger.info("Dominant pollutant: %s", aqi_components['dominant_pollutant'])
+                logger.info("Ozone heat factor: %.2fx at %.1fC", oaf, weather['temp'])
+                logger.info("Heat-pollution risk: %.0f (%s)", ha_aqi, aqi_category)
+                logger.info("  %s", aqi_desc)
             else:
                 self.current_ha_aqi = None
-                print("[OK] Could not calculate AQI from available pollutants")
+                logger.info("Could not calculate AQI from available pollutants")
         else:
             self.current_ha_aqi = None
-            print("[OK] No air quality data available for this location")
+            logger.info("No air quality data available for this location")
 
         # Step 5: Calculate RDS
-        print("\nStep 5: Calculating RDS (nighttime recovery tracking)...")
+        logger.info("Step 5: Calculating RDS (nighttime recovery tracking)...")
+
+        # Backfill historical nighttime temps for first-time users
+        if past_days > 0:
+            self._backfill_rds_history(forecast)
+
         tonight_min = self.rds_calculator.estimate_nighttime_temp_from_forecast(forecast)
         if tonight_min:
-            print(f"  Tonight's estimated minimum: {tonight_min:.1f}C")
+            logger.info("  Tonight's estimated minimum: %.1fC", tonight_min)
             self.rds_calculator.add_night_temperature(tonight_min)
 
-        raw_rds, consecutive_nights = self.rds_calculator.calculate_rds(debug=debug)
-        rds, rds_adjustment = self.rds_calculator.apply_sleep_checkin_adjustment(raw_rds, sleep_checkin)
-        self.current_rds = rds
+        raw_rds_dict = self.rds_calculator.calculate_rds(debug=debug)
+        rds_dict, rds_adjustment = self.rds_calculator.apply_sleep_checkin_adjustment(raw_rds_dict, sleep_checkin)
+        self.current_rds = rds_dict['rds_mid']
 
-        rds_message, rds_color = self.rds_calculator.get_rds_message(tonight_min)
+        rds_message, rds_color = self.rds_calculator.get_rds_message(rds_dict, tonight_min)
         if rds_adjustment['applied']:
-            print(f"[OK] RDS adjusted by check-in: {rds_adjustment['delta']:+.1f}")
-        print(f"[OK] RDS: {rds:.1f}")
-        print(f"  {rds_message}")
+            logger.info("RDS adjusted by check-in: %+.1f", rds_adjustment['delta'])
+        logger.info("RDS (low/mid/high): %.1f / %.1f / %.1f", rds_dict['rds_low'], rds_dict['rds_mid'], rds_dict['rds_high'])
+        logger.info("  %s", rds_message)
 
         # Step 6: Calculate CCRI
-        print("\nStep 6: Calculating CCRI (compound synergistic risk)...")
-        ccri, risk_level = self.ccri_calculator.calculate_ccri(ndt, self.current_ha_aqi, rds, debug=debug)
-        ccri_components = self.ccri_calculator.calculate_component_scores(ndt, self.current_ha_aqi, rds)
+        logger.info("Step 6: Calculating CCRI (compound synergistic risk)...")
+        ccri, risk_level = self.ccri_calculator.calculate_ccri(ndt, self.current_ha_aqi, rds_dict['rds_mid'], debug=debug)
+        ccri_components = self.ccri_calculator.calculate_component_scores(ndt, self.current_ha_aqi, rds_dict['rds_mid'])
         self.current_ccri = ccri
 
         level_name, level_desc, level_color = risk_level
-        print(f"[OK] CCRI: {ccri:.1f}/100")
-        print(f"  Risk Level: {level_name}")
-        print(f"  {level_desc}")
+        logger.info("CCRI: %.1f/100", ccri)
+        logger.info("  Risk Level: %s", level_name)
+        logger.info("  %s", level_desc)
 
         # Step 7: Generate alert
-        print("\nStep 7: Generating personalized alert...")
+        logger.info("Step 7: Generating personalized alert...")
+        pollution_data_quality = ccri_components.get('pollution_data_quality', 'available')
+        
+        # Extract PM2.5 averaging method for alert qualifier
+        pm25_aqi_method = None
+        if aqi_components.get('averaging_windows'):
+            pm25_aqi_method = aqi_components['averaging_windows'].get('PM2.5')
+        
         alert_message = self.ccri_calculator.generate_alert_message(
-            ccri, risk_level, ndt, self.current_ha_aqi, rds_message, self.location_name
+            ccri, risk_level, ndt, self.current_ha_aqi, rds_message, self.location_name, 
+            pollution_data_quality, pm25_aqi_method
         )
 
         self.last_update = datetime.now()
 
-        print(f"\n{'='*60}")
-        print("ALERT MESSAGE")
-        print(f"{'='*60}\n")
-        print(alert_message)
-        print(f"\n{'='*60}")
-        print(f"Update completed at {self.last_update.strftime('%Y-%m-%d %H:%M:%S')}")
-        print(f"Next update in {UPDATE_INTERVAL} hours")
-        print(f"{'='*60}\n")
+        logger.info("=" * 60)
+        logger.info("ALERT MESSAGE")
+        logger.info("=" * 60)
+        logger.info(alert_message)
+        logger.info("=" * 60)
+        logger.info("Update completed at %s", self.last_update.strftime('%Y-%m-%d %H:%M:%S'))
+        logger.info("Next update in %s hours", UPDATE_INTERVAL)
+        logger.info("=" * 60)
 
         result = {
             'timestamp': self.last_update,
@@ -165,10 +182,10 @@ class PRANASystem:
             'ozone_heat_factor': oaf,
             'air_quality_components': aqi_components,
             'heat_pollution': heat_pollution,
-            'rds': rds,
-            'raw_rds': raw_rds,
+            'rds': rds_dict,
+            'raw_rds': raw_rds_dict,
             'rds_adjustment': rds_adjustment,
-            'consecutive_nights': consecutive_nights,
+            'consecutive_nights': rds_dict['consecutive_nights'],
             'rds_message': rds_message,
             'ccri': ccri,
             'ccri_components': ccri_components,
@@ -198,11 +215,32 @@ class PRANASystem:
             f"Status: {'UPDATE NEEDED' if age > UPDATE_INTERVAL else 'Current'}\n"
         )
 
-    def add_historical_night_temp(self, night_temp, date):
-        if isinstance(date, str):
-            date = datetime.strptime(date, '%Y-%m-%d').date()
-        self.rds_calculator.add_night_temperature(night_temp, date)
-        print(f"Added night temp: {night_temp:.1f}C on {date}")
+    def _backfill_rds_history(self, forecast):
+        """Extract past nights' minimum temps from forecast data and seed RDS."""
+        from collections import defaultdict
+        nights = defaultdict(list)
+        now = datetime.now()
+
+        for item in forecast:
+            ts = item['timestamp']
+            # Past data only
+            if ts >= now:
+                continue
+            hour = ts.hour
+            # Night hours: 10 PM to 6 AM
+            if hour >= 22 or hour <= 6:
+                night_key = ts.date() if hour <= 6 else ts.date() - timedelta(days=1)
+                nights[night_key].append(item['temp'])
+
+        past_count = 0
+        for date in sorted(nights.keys()):
+            night_min = min(nights[date])
+            if not any(n['date'] == date for n in self.rds_calculator.nighttime_temps):
+                self.rds_calculator.add_night_temperature(night_min, date)
+                past_count += 1
+
+        if past_count:
+            logger.info("  Backfilled %s past nights for RDS history", past_count)
 
     def _build_structured_result(self, result, weather, pollutants):
         weather_source = weather.get('source', 'unknown') if weather else 'unknown'
@@ -241,6 +279,7 @@ class PRANASystem:
                     'dominant_pollutant': result['air_quality_components'].get('dominant_pollutant'),
                     'pollutant_aqi': result['air_quality_components'].get('pollutant_aqi', {}),
                     'averaging_windows': result['air_quality_components'].get('averaging_windows', {}),
+                    'pm25_aqi_method': result['air_quality_components'].get('averaging_windows', {}).get('PM2.5'),
                     'ozone_heat_factor': round(result['ozone_heat_factor'], 2) if result['ozone_heat_factor'] is not None else None,
                     'ozone_heat_adjusted_aqi': (
                         round(result['heat_pollution']['ozone_heat_adjusted_aqi'], 1)
@@ -254,8 +293,11 @@ class PRANASystem:
                 'recovery': {
                     'label': 'RDS',
                     'description': 'outdoor_nighttime_recovery_risk_proxy',
-                    'value': round(result['rds'], 1),
-                    'raw_value': round(result['raw_rds'], 1),
+                    'value': round(result['rds']['rds_mid'], 1),
+                    'rds_low': round(result['rds']['rds_low'], 1),
+                    'rds_mid': round(result['rds']['rds_mid'], 1),
+                    'rds_high': round(result['rds']['rds_high'], 1),
+                    'raw_rds_mid': round(result['raw_rds']['rds_mid'], 1),
                     'unit': 'score',
                     'score': round(result['ccri_components']['recovery_score'], 1),
                     'consecutive_hot_nights': result['consecutive_nights'],
@@ -270,10 +312,12 @@ class PRANASystem:
                     'value': round(result['ccri'], 1),
                     'unit': 'score',
                     'heat_score': round(result['ccri_components']['heat_score'], 1),
-                    'pollution_score': round(result['ccri_components']['pollution_score'], 1),
+                    'pollution_score': round(result['ccri_components']['pollution_score'], 1) if result['ccri_components']['pollution_score'] is not None else None,
                     'recovery_score': round(result['ccri_components']['recovery_score'], 1),
                     'base_ccri': round(result['ccri_components']['base_ccri'], 1),
                     'recovery_multiplier': round(result['ccri_components']['recovery_multiplier'], 2),
+                    'pollution_data_quality': result['ccri_components'].get('pollution_data_quality', 'available'),
+                    'ccri_confidence': result['ccri_components'].get('ccri_confidence', 'normal'),
                     'confidence': confidence,
                 },
             },
@@ -325,10 +369,10 @@ class PRANASystem:
 
 
 def demo_prana_system():
-    print("\n" + "="*60)
-    print("PRANA SYSTEM DEMO")
-    print("Asia's First Compound Climate Emergency Platform")
-    print("="*60 + "\n")
+    logger.info("=" * 60)
+    logger.info("PRANA SYSTEM DEMO")
+    logger.info("Asia's First Compound Climate Emergency Platform")
+    logger.info("=" * 60)
 
     try:
         from location_detector import get_current_location, get_location_name
@@ -336,8 +380,8 @@ def demo_prana_system():
         lat, lon = location['lat'], location['lon']
         location_name = get_location_name(location)
     except Exception as e:
-        print(f"WARNING: Location detection failed: {e}")
-        print("Using Chennai as default...\n")
+        logger.warning("Location detection failed: %s", e)
+        logger.warning("Using Chennai as default...")
         lat, lon = 13.0827, 80.2707
         location_name = "Chennai, India"
 
@@ -347,19 +391,17 @@ def demo_prana_system():
         urban_heat_offset=3.0,
     )
 
-    print("Adding historical nighttime temperatures for RDS tracking...")
+    logger.info("Adding historical nighttime temperatures for RDS tracking...")
     today = datetime.now().date()
-    prana.add_historical_night_temp(34.5, today - timedelta(days=3))
-    prana.add_historical_night_temp(35.2, today - timedelta(days=2))
-    prana.add_historical_night_temp(36.1, today - timedelta(days=1))
-    print()
+    for temp, delta in [(34.5, 3), (35.2, 2), (36.1, 1)]:
+        prana.rds_calculator.add_night_temperature(temp, today - timedelta(days=delta))
 
     result = prana.update_all(lat, lon)
 
     if result:
-        print("\n[OK] PRANA system operational")
+        logger.info("PRANA system operational")
     else:
-        print("\n[FAIL] System update failed - check API keys and network connection")
+        logger.error("System update failed - check API keys and network connection")
 
 
 if __name__ == "__main__":

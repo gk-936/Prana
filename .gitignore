@@ -29,6 +29,7 @@ backend.err.log
 *.sqlite
 *.sqlite3
 *.db
+data/
 
 # Flutter / Dart
 mobile_app/.dart_tool/
