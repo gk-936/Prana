@@ -14,7 +14,7 @@ This repository currently contains:
 - OpenRouter primary LLM adapter with Ollama fallback
 - Formula validation notes and regression tests
 
-The project is still in prototype/backend-hardening stage. CCRI and RDS are PRANA custom scores and should be presented as estimated risk signals, not official medical or government indices.
+The project is in prototype/backend-hardening stage. CCRI and RDS are PRANA custom scores and should be presented as estimated risk signals, not official medical or government indices.
 
 ## Architecture
 
