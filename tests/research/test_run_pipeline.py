@@ -4,12 +4,17 @@ from research.indoor_heat import run_pipeline
 from research.indoor_heat.adapters.south_asia.adapter import SouthAsiaAdapter
 
 def _write_min_site(raw: Path):
-    # Indoor: wide format, one logger column, two night readings
+    # Indoor: wide format, one logger column, two night readings.
+    # Delhi's real indoor files turned out to be dash=MM-DD (discovered via
+    # the continuity check against the real dataset in task B8 -- the
+    # project's earlier assumption that ALL indoor files were dash=DD-MM
+    # was wrong for Delhi specifically), so this fixture uses MM-DD dates
+    # ('03-01-2016' = March 1) to match SouthAsiaAdapter's per-site override.
     (raw).mkdir(parents=True, exist_ok=True)
     (raw / "Delhi Indoor Data.csv").write_text(
         "Timestamp,L1\n"
-        "01-03-2016 23:00,33.0\n"
-        "02-03-2016 02:00,31.0\n"
+        "03-01-2016 23:00,33.0\n"
+        "03-02-2016 02:00,31.0\n"
     )
     (raw / "Delhi AWS Data.csv").write_text(
         "Date,Time,Temp Out\n"
