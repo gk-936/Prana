@@ -2,7 +2,6 @@
 roof type (with interaction), and floor level. Site is the grouping factor."""
 from __future__ import annotations
 
-from pathlib import Path
 import numpy as np
 import pandas as pd
 import statsmodels.formula.api as smf
