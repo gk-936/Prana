@@ -50,3 +50,6 @@ mobile_app/android/app/release/
 .DS_Store
 Thumbs.db
 .superpowers/
+
+# Research outputs
+research/indoor_heat/**/outputs/

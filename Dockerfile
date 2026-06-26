@@ -2,7 +2,7 @@ FROM python:3.9-slim AS builder
 
 WORKDIR /app
 
-COPY requirements.txt .
+COPY pyproject.toml requirements.txt ./
 RUN pip install --no-cache-dir --user -r requirements.txt
 
 FROM python:3.9-slim
