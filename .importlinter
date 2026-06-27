@@ -1,0 +1,14 @@
+[importlinter]
+root_packages =
+    framework
+    prana
+    backend
+
+[importlinter:contract:framework-is-independent]
+name = framework must not depend on prana or backend
+type = forbidden
+source_modules =
+    framework
+forbidden_modules =
+    prana
+    backend
