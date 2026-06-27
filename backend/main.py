@@ -21,6 +21,9 @@ logger = get_logger("api")
 from prana.config import OPENAQ_API_KEY, OPENWEATHER_API_KEY, UPDATE_INTERVAL  # noqa: E402
 from prana.prana_system import PRANASystem  # noqa: E402
 from backend.database import load_nighttime_temps, save_nighttime_temps  # noqa: E402
+from prana.bot.bootstrap import build_repo  # noqa: E402
+
+user_repo = build_repo()
 
 
 app = FastAPI(
