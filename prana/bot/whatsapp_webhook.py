@@ -23,6 +23,7 @@ APP_SECRET = settings.whatsapp_app_secret
 VERIFY_TOKEN = settings.whatsapp_verify_token
 
 _ONBOARD = "Welcome to PRANA. Reply START to set up heat alerts for your area."
+_ACTIVATED = "You're all set! PRANA will alert you when conditions turn risky."
 
 
 @router.get("/webhook/whatsapp")
@@ -62,6 +63,16 @@ async def receive(request: Request) -> Response:
     user = await user_repo.get_by_phone(phone)
     if user is None:
         await messaging.send(channel="whatsapp", recipient=phone, body=_ONBOARD)
+        return Response(status_code=200)
+
+    # Default True: every real (SQLite-backed) user always has an explicit
+    # verified bool via SQLiteUserRepository._to_user, so this default only
+    # matters for hand-built/in-memory UserContext objects, where "no
+    # opinion expressed" should mean "let through," not "block."
+    if not user.metadata.get("verified", True):
+        user.metadata["verified"] = True
+        await user_repo.upsert(user)
+        await messaging.send(channel="whatsapp", recipient=phone, body=_ACTIVATED)
         return Response(status_code=200)
 
     ag = make_agent(provider, registry, max_steps=settings.agent_max_steps,

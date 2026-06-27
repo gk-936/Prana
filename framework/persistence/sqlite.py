@@ -18,7 +18,8 @@ CREATE TABLE IF NOT EXISTS users (
     onboarding_json TEXT,
     role TEXT,
     locale TEXT,
-    created_at TEXT
+    created_at TEXT,
+    verified INTEGER DEFAULT 0
 )
 """
 
@@ -28,6 +29,10 @@ class SQLiteUserRepository:
         self.db_path = db_path.replace("sqlite:///", "").replace("sqlite://", "")
         with self._conn() as c:
             c.execute(_SCHEMA)
+            try:
+                c.execute("ALTER TABLE users ADD COLUMN verified INTEGER DEFAULT 0")
+            except sqlite3.OperationalError:
+                pass  # column already exists (fresh DB created with the schema above)
 
     def _conn(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path)
@@ -47,6 +52,7 @@ class SQLiteUserRepository:
                 "location_name": row["location_name"],
                 "urban_heat_offset": row["urban_heat_offset"],
                 "onboarding": json.loads(row["onboarding_json"]) if row["onboarding_json"] else None,
+                "verified": bool(row["verified"]) if row["verified"] is not None else False,
             },
         )
 
@@ -70,16 +76,18 @@ class SQLiteUserRepository:
             c.execute(
                 """INSERT INTO users
                    (user_id, phone, location_name, lat, lon, urban_heat_offset,
-                    onboarding_json, role, locale, created_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?)
+                    onboarding_json, role, locale, created_at, verified)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?)
                    ON CONFLICT(user_id) DO UPDATE SET
                      phone=excluded.phone, location_name=excluded.location_name,
                      lat=excluded.lat, lon=excluded.lon,
                      urban_heat_offset=excluded.urban_heat_offset,
                      onboarding_json=excluded.onboarding_json,
-                     role=excluded.role, locale=excluded.locale""",
+                     role=excluded.role, locale=excluded.locale,
+                     verified=excluded.verified""",
                 (user.user_id, user.phone, m.get("location_name"), m.get("lat"), m.get("lon"),
                  m.get("urban_heat_offset"),
                  json.dumps(m.get("onboarding")) if m.get("onboarding") is not None else None,
-                 user.role, user.locale, datetime.now(timezone.utc).isoformat()),
+                 user.role, user.locale, datetime.now(timezone.utc).isoformat(),
+                 1 if m.get("verified") else 0),
             )

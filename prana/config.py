@@ -11,6 +11,7 @@ OPENAQ_API_KEY = os.getenv('OPENAQ_API_KEY', '')  # Get free key from https://op
 # WhatsApp Business Cloud API / provider
 WHATSAPP_ACCESS_TOKEN = os.getenv('WHATSAPP_ACCESS_TOKEN', '')
 WHATSAPP_PHONE_NUMBER_ID = os.getenv('WHATSAPP_PHONE_NUMBER_ID', '')
+WHATSAPP_BOT_NUMBER = os.getenv('WHATSAPP_BOT_NUMBER', '')  # E.164 number for wa.me deep links, e.g. 919900000000
 WHATSAPP_VERIFY_TOKEN = os.getenv('WHATSAPP_VERIFY_TOKEN', '')
 WHATSAPP_APP_SECRET = os.getenv('WHATSAPP_APP_SECRET', '')
 

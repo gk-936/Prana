@@ -21,6 +21,11 @@ logger = get_logger("api")
 from prana.config import OPENAQ_API_KEY, OPENWEATHER_API_KEY, UPDATE_INTERVAL  # noqa: E402
 from prana.prana_system import PRANASystem  # noqa: E402
 from backend.database import load_nighttime_temps, save_nighttime_temps  # noqa: E402
+from prana.bot.bootstrap import build_repo  # noqa: E402
+from framework.context.user import UserContext  # noqa: E402
+from prana.config import WHATSAPP_BOT_NUMBER  # noqa: E402
+
+user_repo = build_repo()
 
 
 app = FastAPI(
@@ -92,6 +97,28 @@ class RiskResponse(BaseModel):
     model_config = {"json_encoders": {datetime: lambda v: v.isoformat()}}
 
 
+class HomeProfile(BaseModel):
+    ac: bool
+    roof_material: str
+    floor_level: str
+
+
+class RegisterRequest(BaseModel):
+    phone: str = Field(..., min_length=8, max_length=20)
+    location_name: str = Field(..., min_length=1, max_length=120)
+    lat: float = Field(..., ge=-90, le=90)
+    lon: float = Field(..., ge=-180, le=180)
+    urban_heat_offset: Optional[float] = Field(None, ge=0, le=8)
+    onboarding: HomeProfile
+
+
+class RegisterResponse(BaseModel):
+    ok: bool
+    user_id: str
+    verified: bool
+    whatsapp_link: str
+
+
 @app.get("/health")
 def health() -> Dict[str, Any]:
     """Return backend status for app and deployment checks."""
@@ -117,6 +144,33 @@ async def calculate_current_risk(payload: RiskRequest) -> RiskResponse:
         )
 
     return RiskResponse(result=_serialize_result(result), calculation_log=logs)
+
+
+@app.post("/register", response_model=RegisterResponse)
+async def register(payload: RegisterRequest) -> RegisterResponse:
+    """Register a phone number for WhatsApp alerts; preserves verified status
+    on re-registration since SQLiteUserRepository.upsert replaces the full row."""
+    existing = await user_repo.get_by_phone(payload.phone)
+    was_verified = bool(existing.metadata.get("verified")) if existing else False
+
+    user = UserContext(
+        user_id=payload.phone,
+        phone=payload.phone,
+        metadata={
+            "lat": payload.lat,
+            "lon": payload.lon,
+            "location_name": payload.location_name,
+            "urban_heat_offset": payload.urban_heat_offset,
+            "onboarding": payload.onboarding.model_dump(),
+            "verified": was_verified,
+        },
+    )
+    await user_repo.upsert(user)
+
+    link = f"https://wa.me/{WHATSAPP_BOT_NUMBER}?text=PRANA%20START"
+    return RegisterResponse(
+        ok=True, user_id=user.user_id, verified=was_verified, whatsapp_link=link
+    )
 
 
 def _run_prana_pipeline(payload: RiskRequest):

@@ -76,3 +76,39 @@ def test_forged_signature_rejected(client):
     r = c.post("/webhook/whatsapp", content=body,
                headers={"X-Hub-Signature-256": "sha256=wrong"})
     assert r.status_code == 403
+
+
+def test_unverified_user_first_message_activates(client):
+    c, repo, channel = client
+    import asyncio
+    asyncio.run(
+        repo.upsert(UserContext(user_id="u2", phone="+919900005555",
+                                metadata={"lat": 13.08, "lon": 80.27, "verified": False})))
+    body = json.dumps({"entry": [{"changes": [{"value": {"messages": [
+        {"from": "+919900005555", "text": {"body": "PRANA START"}}]}}]}]}).encode()
+    r = c.post("/webhook/whatsapp", content=body,
+               headers={"X-Hub-Signature-256": _sign(body, "secret")})
+    assert r.status_code == 200
+    assert "all set" in channel.sent[-1].body.lower()
+    assert channel.sent[-1].recipient == "+919900005555"
+
+    async def check():
+        return await repo.get_by_phone("+919900005555")
+    user = asyncio.run(check())
+    assert user.metadata["verified"] is True
+
+
+def test_verified_user_gets_normal_agent_flow_not_activation_message(client):
+    # Regression check: a verified user's message must NOT get the
+    # activation reply — it must reach the agent flow as before.
+    c, repo, channel = client
+    import asyncio
+    asyncio.run(
+        repo.upsert(UserContext(user_id="u3", phone="+919900006666",
+                                metadata={"lat": 13.08, "lon": 80.27, "verified": True})))
+    body = json.dumps({"entry": [{"changes": [{"value": {"messages": [
+        {"from": "+919900006666", "text": {"body": "why is my risk high?"}}]}}]}]}).encode()
+    r = c.post("/webhook/whatsapp", content=body,
+               headers={"X-Hub-Signature-256": _sign(body, "secret")})
+    assert r.status_code == 200
+    assert "all set" not in channel.sent[-1].body.lower()

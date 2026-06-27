@@ -21,6 +21,7 @@ class FrameworkSettings(BaseSettings):
     agent_temperature: float = 0.2
     whatsapp_access_token: str = ""
     whatsapp_phone_number_id: str = ""
+    whatsapp_bot_number: str = ""
     whatsapp_verify_token: str = ""
     whatsapp_app_secret: str = ""
     smtp_host: str = ""
