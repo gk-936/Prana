@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 
 from fastapi import APIRouter, Request, Response
 
@@ -47,20 +48,12 @@ def _parse(payload: dict):
         return None
 
 
-async def _send(recipient: str, body: str) -> None:
-    # Use the WhatsApp channel in production; fall back to the sole registered
-    # channel (e.g. MockChannel in tests) so the webhook stays channel-agnostic.
-    channel = "whatsapp" if "whatsapp" in messaging._channels else next(iter(messaging._channels))
-    await messaging.send(channel=channel, recipient=recipient, body=body)
-
-
 @router.post("/webhook/whatsapp")
 async def receive(request: Request) -> Response:
     body = await request.body()
     if not _valid_signature(body, request.headers.get("X-Hub-Signature-256")):
         return Response(status_code=403)
 
-    import json
     parsed = _parse(json.loads(body))
     if not parsed:
         return Response(status_code=200)  # status callbacks etc. — ack and ignore
@@ -68,11 +61,12 @@ async def receive(request: Request) -> Response:
 
     user = await user_repo.get_by_phone(phone)
     if user is None:
-        await _send(phone, _ONBOARD)
+        await messaging.send(channel="whatsapp", recipient=phone, body=_ONBOARD)
         return Response(status_code=200)
 
     ag = make_agent(provider, registry, max_steps=settings.agent_max_steps,
                     temperature=settings.agent_temperature)
     result = await ag.run(text, user)
-    await _send(phone, result.answer or "Sorry, please try again.")
+    await messaging.send(channel="whatsapp", recipient=phone,
+                          body=result.answer or "Sorry, please try again.")
     return Response(status_code=200)

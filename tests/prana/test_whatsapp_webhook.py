@@ -12,14 +12,13 @@ from framework.messaging.registry import MessagingRegistry
 from framework.persistence.memory import InMemoryUserRepository
 from framework.tools.base import ToolRegistry
 from prana.ai_tools.risk import risk_tool
-from prana import bot
 import prana.bot.whatsapp_webhook as wh
 
 
 @pytest.fixture
 def client(monkeypatch):
     repo = InMemoryUserRepository()
-    msg = MessagingRegistry(); mock_channel = MockChannel(); msg.add(mock_channel)
+    msg = MessagingRegistry(); mock_channel = MockChannel(); mock_channel.name = "whatsapp"; msg.add(mock_channel)
     reg = ToolRegistry(); reg.register(risk_tool)
     provider = MockProvider(responses=[
         ChatResponse(content=None, tool_calls=[ToolCall("1", "get_risk", {})], usage=Usage()),
