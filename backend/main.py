@@ -38,6 +38,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+from prana.bot.whatsapp_webhook import router as whatsapp_router  # noqa: E402
+app.include_router(whatsapp_router)
+
 
 # ---------------------------------------------------------------------------
 # Simple in-memory rate limiter

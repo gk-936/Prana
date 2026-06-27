@@ -3,6 +3,8 @@
 OpenRouter is the primary hosted provider. Ollama is the local fallback.
 The scoring engine should remain deterministic; this adapter is for language
 understanding, response drafting, and structured extraction only.
+
+Superseded by framework.ai; retained until all callers migrated.
 """
 
 from dataclasses import dataclass
@@ -19,6 +21,10 @@ from prana.config import (
     OPENROUTER_MODEL,
 )
 from backend.logger import get_logger
+
+from framework.ai.factory import build_provider
+from framework.config.settings import FrameworkSettings
+from framework.ai.base import Message, Role
 
 _log = get_logger("llm")
 
@@ -96,18 +102,14 @@ class LLMClient:
                 "confidence": "high",
             }
 
-        prompt = [
-            LLMMessage(
-                role="system",
-                content=(
-                    "Extract PRANA sleep recovery check-in data. Return only compact JSON "
-                    "with sleep_environment, sleep_quality, cooling_issue, power_issue, confidence."
-                ),
-            ),
-            LLMMessage(role="user", content=user_message),
-        ]
-        response = self.chat(prompt, temperature=0)
-        return {"raw_llm_response": response, "confidence": "low"}
+        provider = build_provider(FrameworkSettings())
+        resp = provider.chat([
+            Message(Role.SYSTEM, (
+                "Extract PRANA sleep recovery check-in data. Return only compact JSON "
+                "with sleep_environment, sleep_quality, cooling_issue, power_issue, confidence.")),
+            Message(Role.USER, user_message),
+        ], temperature=0)
+        return {"raw_llm_response": resp.content, "confidence": "low"}
 
     def _chat_openrouter(self, messages: List[LLMMessage], temperature: float) -> str:
         if not self.openrouter_api_key:
