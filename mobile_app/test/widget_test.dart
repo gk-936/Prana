@@ -1,12 +1,18 @@
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:prana_app/main.dart';
+import 'package:prana_app/screens/dashboard_screen.dart';
+import 'package:prana_app/services/api_client.dart';
 
 void main() {
-  testWidgets('PRANA dashboard renders core controls', (
-    WidgetTester tester,
-  ) async {
-    await tester.pumpWidget(const PranaApp());
+  testWidgets('dashboard renders core controls', (WidgetTester tester) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: DashboardScreen(
+          apiClient: PranaApiClient(baseUrl: 'http://10.0.2.2:8000'),
+        ),
+      ),
+    );
 
     expect(find.text('PRANA'), findsOneWidget);
     expect(find.text('Location'), findsOneWidget);
