@@ -47,3 +47,34 @@ def test_sqlite_strips_url_prefix(tmp_path):
     repo = SQLiteUserRepository(f"sqlite:///{tmp_path}/url.db")
     asyncio.run(repo.upsert(_user()))
     assert asyncio.run(repo.get("u1")).user_id == "u1"
+
+
+def test_sqlite_migrates_pre_existing_db_without_verified_column(tmp_path):
+    import sqlite3
+    db_path = str(tmp_path / "legacy.db")
+    # Simulate a database created before the verified column existed.
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        """CREATE TABLE users (
+            user_id TEXT PRIMARY KEY, phone TEXT, location_name TEXT,
+            lat REAL, lon REAL, urban_heat_offset REAL,
+            onboarding_json TEXT, role TEXT, locale TEXT, created_at TEXT
+        )"""
+    )
+    conn.execute(
+        "INSERT INTO users (user_id, phone) VALUES ('u1', '+919900')"
+    )
+    conn.commit()
+    conn.close()
+
+    repo = SQLiteUserRepository(db_path)  # must not raise
+
+    async def go():
+        u = await repo.get("u1")
+        assert u.metadata.get("verified", False) is False
+        u.metadata["verified"] = True
+        await repo.upsert(u)
+        u2 = await repo.get("u1")
+        assert u2.metadata["verified"] is True
+
+    asyncio.run(go())
