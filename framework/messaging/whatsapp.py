@@ -5,30 +5,26 @@ import httpx
 from framework.messaging.base import DeliveryResult, OutboundMessage
 
 
-class WhatsAppChannel:
+class TwilioWhatsAppChannel:
     name = "whatsapp"
 
-    def __init__(self, access_token: str, phone_number_id: str,
-                 base_url: str = "https://graph.facebook.com/v20.0", timeout: float = 30.0):
-        self.access_token = access_token
-        self.phone_number_id = phone_number_id
+    def __init__(self, account_sid: str, auth_token: str, from_number: str,
+                 base_url: str = "https://api.twilio.com/2010-04-01", timeout: float = 30.0):
+        self.account_sid = account_sid
+        self.auth_token = auth_token
+        self.from_number = from_number
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
 
     async def send(self, msg: OutboundMessage) -> DeliveryResult:
-        url = f"{self.base_url}/{self.phone_number_id}/messages"
-        payload = {
-            "messaging_product": "whatsapp",
-            "to": msg.recipient,
-            "type": "text",
-            "text": {"body": msg.body},
-        }
-        headers = {"Authorization": f"Bearer {self.access_token}"}
+        url = f"{self.base_url}/Accounts/{self.account_sid}/Messages.json"
+        to = msg.recipient if msg.recipient.startswith("whatsapp:") else f"whatsapp:{msg.recipient}"
+        data = {"From": self.from_number, "To": to, "Body": msg.body}
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
-                resp = await client.post(url, headers=headers, json=payload)
+                resp = await client.post(url, data=data, auth=(self.account_sid, self.auth_token))
                 resp.raise_for_status()
-            mid = (resp.json().get("messages") or [{}])[0].get("id")
-            return DeliveryResult(ok=True, provider_message_id=mid)
+            sid = resp.json().get("sid")
+            return DeliveryResult(ok=True, provider_message_id=sid)
         except httpx.HTTPError as exc:
             return DeliveryResult(ok=False, error=str(exc))
