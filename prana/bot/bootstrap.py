@@ -4,7 +4,7 @@ from __future__ import annotations
 from framework.ai.factory import build_provider
 from framework.config.settings import FrameworkSettings
 from framework.messaging.registry import MessagingRegistry
-from framework.messaging.whatsapp import WhatsAppChannel
+from framework.messaging.whatsapp import TwilioWhatsAppChannel
 from framework.persistence.sqlite import SQLiteUserRepository, SQLiteCheckinRepository
 from framework.tools.base import ToolRegistry
 from prana.ai_tools.risk import risk_tool
@@ -27,7 +27,9 @@ def build_provider_chain():
 
 def build_messaging() -> MessagingRegistry:
     reg = MessagingRegistry()
-    reg.add(WhatsAppChannel(settings.whatsapp_access_token, settings.whatsapp_phone_number_id))
+    reg.add(TwilioWhatsAppChannel(
+        settings.whatsapp_account_sid, settings.whatsapp_auth_token, settings.whatsapp_from_number,
+    ))
     return reg
 
 
