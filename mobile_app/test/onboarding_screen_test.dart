@@ -37,6 +37,7 @@ void main() {
         'user_id': '+919900001111',
         'verified': false,
         'whatsapp_link': 'https://wa.me/919900000000?text=PRANA%20START',
+        'sandbox_join_code': 'able-tiger',
       }),
       200,
     );
@@ -88,5 +89,52 @@ void main() {
 
     expect(find.text('Open WhatsApp'), findsOneWidget);
     expect(find.text('Continue to Dashboard'), findsOneWidget);
+  });
+
+  testWidgets('shows join code instructions after successful registration', (
+    WidgetTester tester,
+  ) async {
+    final fakeClient = _FakeHttpClient(
+      jsonEncode({
+        'ok': true,
+        'user_id': '+919900001111',
+        'verified': false,
+        'whatsapp_link': 'https://wa.me/919900000000?text=PRANA%20START',
+        'sandbox_join_code': 'able-tiger',
+      }),
+      200,
+    );
+    final apiClient = PranaApiClient(
+      baseUrl: 'http://10.0.2.2:8000',
+      client: fakeClient,
+    );
+
+    // The onboarding form is taller than the default 800x600 test surface
+    // (phone, location, GPS, six home-profile controls, register button).
+    // Enlarge the surface so the whole form is on-screen and the register
+    // button is reliably hit-testable without scrolling.
+    tester.view.physicalSize = const Size(1000, 2200);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: OnboardingScreen(apiClient: apiClient, onContinue: (_, __) {}),
+      ),
+    );
+
+    await tester.enterText(find.byKey(const Key('phoneField')), '+919900001111');
+    await tester.enterText(
+      find.byKey(const Key('locationNameField')),
+      'T. Nagar, Chennai',
+    );
+    await tester.enterText(find.byKey(const Key('latField')), '13.0827');
+    await tester.enterText(find.byKey(const Key('lonField')), '80.2707');
+
+    await tester.tap(find.byKey(const Key('registerButton')));
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining('able-tiger'), findsOneWidget);
   });
 }

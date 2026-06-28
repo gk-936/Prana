@@ -293,7 +293,14 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        const Text('One more step'),
+                        const Text('Two more steps to activate WhatsApp alerts'),
+                        const SizedBox(height: 8),
+                        Text(
+                          "1. Send \"join ${_result!.sandboxJoinCode}\" to PRANA's "
+                          'WhatsApp number',
+                        ),
+                        const SizedBox(height: 4),
+                        const Text('2. Then tap below to finish activation'),
                         const SizedBox(height: 8),
                         Wrap(
                           spacing: 10,

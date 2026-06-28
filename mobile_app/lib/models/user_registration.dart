@@ -67,6 +67,7 @@ class RegisterResult {
     required this.userId,
     required this.verified,
     required this.whatsappLink,
+    required this.sandboxJoinCode,
   });
 
   factory RegisterResult.fromJson(Map<String, dynamic> json) {
@@ -75,6 +76,7 @@ class RegisterResult {
       userId: json['user_id'] as String,
       verified: json['verified'] as bool,
       whatsappLink: json['whatsapp_link'] as String,
+      sandboxJoinCode: json['sandbox_join_code'] as String,
     );
   }
 
@@ -82,4 +84,5 @@ class RegisterResult {
   final String userId;
   final bool verified;
   final String whatsappLink;
+  final String sandboxJoinCode;
 }
