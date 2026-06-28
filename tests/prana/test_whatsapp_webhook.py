@@ -1,9 +1,7 @@
-import hashlib
-import hmac
-import json
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from twilio.request_validator import RequestValidator
 from framework.ai.base import ChatResponse, ToolCall, Usage
 from framework.ai.mock import MockProvider
 from framework.context.user import UserContext
@@ -13,6 +11,8 @@ from framework.persistence.memory import InMemoryUserRepository
 from framework.tools.base import ToolRegistry
 from prana.ai_tools.risk import risk_tool
 import prana.bot.whatsapp_webhook as wh
+
+BASE_URL = "https://example.ngrok-free.app/webhook/whatsapp"
 
 
 @pytest.fixture
@@ -28,9 +28,9 @@ def client(monkeypatch):
     monkeypatch.setattr(wh, "messaging", msg)
     monkeypatch.setattr(wh, "registry", reg)
     monkeypatch.setattr(wh, "provider", provider)
-    monkeypatch.setattr(wh, "APP_SECRET", "secret")
-    monkeypatch.setattr(wh, "VERIFY_TOKEN", "verifytok")
-    # patch the engine so get_risk doesn't hit network
+    monkeypatch.setattr(wh, "AUTH_TOKEN", "secret")
+    monkeypatch.setattr(wh, "validator", RequestValidator("secret"))
+    monkeypatch.setattr(wh, "WEBHOOK_URL", BASE_URL)
     from unittest.mock import patch
     from datetime import datetime
     patcher = patch("prana.ai_tools.risk.PRANASystem")
@@ -44,15 +44,13 @@ def client(monkeypatch):
     patcher.stop()
 
 
-def _sign(body: bytes, secret: str) -> str:
-    return "sha256=" + hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+def _sign(form: dict, secret: str) -> str:
+    return RequestValidator(secret).compute_signature(BASE_URL, form)
 
 
-def test_verify_challenge(client):
-    c, _, _ = client
-    r = c.get("/webhook/whatsapp", params={
-        "hub.mode": "subscribe", "hub.verify_token": "verifytok", "hub.challenge": "12345"})
-    assert r.status_code == 200 and r.text == "12345"
+def _post(c, form: dict):
+    return c.post("/webhook/whatsapp", data=form,
+                  headers={"X-Twilio-Signature": _sign(form, "secret")})
 
 
 def test_known_user_gets_agent_reply(client):
@@ -60,11 +58,8 @@ def test_known_user_gets_agent_reply(client):
     import asyncio
     asyncio.run(
         repo.upsert(UserContext(user_id="u1", phone="+919900",
-                                metadata={"lat": 13.08, "lon": 80.27})))
-    body = json.dumps({"entry": [{"changes": [{"value": {"messages": [
-        {"from": "+919900", "text": {"body": "why is my risk high?"}}]}}]}]}).encode()
-    r = c.post("/webhook/whatsapp", content=body,
-               headers={"X-Hub-Signature-256": _sign(body, "secret")})
+                                metadata={"lat": 13.08, "lon": 80.27, "verified": True})))
+    r = _post(c, {"From": "whatsapp:+919900", "Body": "why is my risk high?"})
     assert r.status_code == 200
     assert channel.sent[-1].body == "Your risk is HIGH tonight."
     assert channel.sent[-1].recipient == "+919900"
@@ -72,9 +67,8 @@ def test_known_user_gets_agent_reply(client):
 
 def test_forged_signature_rejected(client):
     c, _, _ = client
-    body = b'{"entry":[]}'
-    r = c.post("/webhook/whatsapp", content=body,
-               headers={"X-Hub-Signature-256": "sha256=wrong"})
+    r = c.post("/webhook/whatsapp", data={"From": "whatsapp:+919900", "Body": "hi"},
+               headers={"X-Twilio-Signature": "wrong"})
     assert r.status_code == 403
 
 
@@ -84,10 +78,7 @@ def test_unverified_user_first_message_activates(client):
     asyncio.run(
         repo.upsert(UserContext(user_id="u2", phone="+919900005555",
                                 metadata={"lat": 13.08, "lon": 80.27, "verified": False})))
-    body = json.dumps({"entry": [{"changes": [{"value": {"messages": [
-        {"from": "+919900005555", "text": {"body": "PRANA START"}}]}}]}]}).encode()
-    r = c.post("/webhook/whatsapp", content=body,
-               headers={"X-Hub-Signature-256": _sign(body, "secret")})
+    r = _post(c, {"From": "whatsapp:+919900005555", "Body": "PRANA START"})
     assert r.status_code == 200
     assert "all set" in channel.sent[-1].body.lower()
     assert channel.sent[-1].recipient == "+919900005555"
@@ -99,16 +90,29 @@ def test_unverified_user_first_message_activates(client):
 
 
 def test_verified_user_gets_normal_agent_flow_not_activation_message(client):
-    # Regression check: a verified user's message must NOT get the
-    # activation reply — it must reach the agent flow as before.
     c, repo, channel = client
     import asyncio
     asyncio.run(
         repo.upsert(UserContext(user_id="u3", phone="+919900006666",
                                 metadata={"lat": 13.08, "lon": 80.27, "verified": True})))
-    body = json.dumps({"entry": [{"changes": [{"value": {"messages": [
-        {"from": "+919900006666", "text": {"body": "why is my risk high?"}}]}}]}]}).encode()
-    r = c.post("/webhook/whatsapp", content=body,
-               headers={"X-Hub-Signature-256": _sign(body, "secret")})
+    r = _post(c, {"From": "whatsapp:+919900006666", "Body": "why is my risk high?"})
     assert r.status_code == 200
     assert "all set" not in channel.sent[-1].body.lower()
+
+
+def test_unknown_user_gets_register_first_message(client):
+    c, repo, channel = client
+    r = _post(c, {"From": "whatsapp:+919900007777", "Body": "hello"})
+    assert r.status_code == 200
+    assert "register" in channel.sent[-1].body.lower()
+
+
+def test_inbound_whatsapp_prefix_is_stripped_for_lookup(client):
+    c, repo, channel = client
+    import asyncio
+    asyncio.run(
+        repo.upsert(UserContext(user_id="u4", phone="+919900008888",
+                                metadata={"lat": 13.08, "lon": 80.27, "verified": True})))
+    r = _post(c, {"From": "whatsapp:+919900008888", "Body": "why is my risk high?"})
+    assert r.status_code == 200
+    assert channel.sent[-1].recipient == "+919900008888"
