@@ -23,11 +23,12 @@ class FrameworkSettings(BaseSettings):
     gemini_model: str = "gemini-2.0-flash"
     agent_max_steps: int = 5
     agent_temperature: float = 0.2
-    whatsapp_access_token: str = ""
-    whatsapp_phone_number_id: str = ""
+    whatsapp_account_sid: str = ""
+    whatsapp_auth_token: str = ""
+    whatsapp_from_number: str = ""
     whatsapp_bot_number: str = ""
-    whatsapp_verify_token: str = ""
-    whatsapp_app_secret: str = ""
+    whatsapp_sandbox_join_code: str = ""
+    whatsapp_webhook_base_url: str = ""
     smtp_host: str = ""
     smtp_port: int = 587
     smtp_user: str = ""
