@@ -3,17 +3,35 @@ class HomeProfile {
     required this.ac,
     required this.roofMaterial,
     required this.floorLevel,
+    this.fan = false,
+    this.windowsOpen = false,
+    this.occupants = 1,
   });
 
   final bool ac;
   final String roofMaterial;
   final String floorLevel;
+  final bool fan;
+  final bool windowsOpen;
+  final int occupants;
 
   Map<String, dynamic> toJson() => {
     'ac': ac,
     'roof_material': roofMaterial,
     'floor_level': floorLevel,
+    'fan': fan,
+    'windows_open': windowsOpen,
+    'occupants': occupants,
   };
+
+  factory HomeProfile.fromJson(Map<String, dynamic> json) => HomeProfile(
+    ac: json['ac'] as bool? ?? false,
+    roofMaterial: json['roof_material'] as String? ?? 'concrete',
+    floorLevel: json['floor_level'] as String? ?? 'ground',
+    fan: json['fan'] as bool? ?? false,
+    windowsOpen: json['windows_open'] as bool? ?? false,
+    occupants: (json['occupants'] as num?)?.toInt() ?? 1,
+  );
 }
 
 class RegistrationRequest {

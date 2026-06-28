@@ -39,7 +39,11 @@ def save_nighttime_temps(lat: float, lon: float, temps: List[dict]):
         d = t["date"]
         if isinstance(d, date):
             d = d.isoformat()
-        serialized.append({"date": d, "temp": t["temp"]})
+        entry = {"date": d, "temp": t["temp"]}
+        # Preserve humidity when present so wet-bulb scoring survives a reload
+        if t.get("humidity") is not None:
+            entry["humidity"] = t["humidity"]
+        serialized.append(entry)
     payload = {
         "nighttime_temps": serialized,
         "last_updated": datetime.now().isoformat(),

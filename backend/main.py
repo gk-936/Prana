@@ -19,13 +19,16 @@ from backend.logger import get_logger
 logger = get_logger("api")
 
 from prana.config import OPENAQ_API_KEY, OPENWEATHER_API_KEY, UPDATE_INTERVAL  # noqa: E402
+from prana.config import RDS_NIGHTTIME_THRESHOLD  # noqa: E402
 from prana.prana_system import PRANASystem  # noqa: E402
 from backend.database import load_nighttime_temps, save_nighttime_temps  # noqa: E402
-from prana.bot.bootstrap import build_repo  # noqa: E402
+from prana.bot.bootstrap import build_repo, build_checkin_repo  # noqa: E402
+from prana.personalization import personalize_offset  # noqa: E402
 from framework.context.user import UserContext  # noqa: E402
 from prana.config import WHATSAPP_BOT_NUMBER  # noqa: E402
 
 user_repo = build_repo()
+checkin_repo = build_checkin_repo()
 
 
 app = FastAPI(
@@ -88,6 +91,11 @@ class RiskRequest(BaseModel):
     onboarding_data: Optional[dict] = Field(
         None, description="Home profile: {ac: bool, roof_material: str, floor_level: str}"
     )
+    user_id: Optional[str] = Field(
+        None,
+        description="If provided, the user's stored sleep check-ins personalise "
+                    "the RDS indoor-offset estimate. Omit for population-only scoring.",
+    )
 
 
 class RiskResponse(BaseModel):
@@ -101,6 +109,30 @@ class HomeProfile(BaseModel):
     ac: bool
     roof_material: str
     floor_level: str
+    fan: bool = False
+    windows_open: bool = False
+    occupants: int = Field(1, ge=1, le=10, description="People sharing the sleeping room.")
+
+
+class CheckinRequest(BaseModel):
+    user_id: str = Field(..., min_length=1, max_length=64)
+    sleep_quality: str = Field(
+        ..., description="good | moderate | poor (or comfortable/warm/too_hot)."
+    )
+    outdoor_temp: Optional[float] = Field(
+        None, ge=-30, le=60, description="Outdoor nighttime temp for the reported night (C)."
+    )
+    humidity: Optional[float] = Field(None, ge=0, le=100)
+    checkin_date: Optional[str] = Field(
+        None, description="ISO date (YYYY-MM-DD). Defaults to today (UTC)."
+    )
+
+
+class CheckinResponse(BaseModel):
+    ok: bool
+    user_id: str
+    checkin_date: str
+    n_checkins: int
 
 
 class RegisterRequest(BaseModel):
@@ -135,8 +167,22 @@ def health() -> Dict[str, Any]:
 
 @app.post("/risk/current", response_model=RiskResponse)
 async def calculate_current_risk(payload: RiskRequest) -> RiskResponse:
-    """Calculate current PRANA climate risk metrics for a user-selected location."""
-    result, logs = await run_in_threadpool(_run_prana_pipeline, payload)
+    """Calculate current PRANA climate risk metrics for a user-selected location.
+
+    When `user_id` is supplied and that user has stored sleep check-ins, the RDS
+    indoor-offset is personalised from those check-ins (Bayesian shrinkage from
+    the onboarding prior). Otherwise scoring is population-only, exactly as before.
+    """
+    personalization = None
+    if payload.user_id:
+        checkins = await checkin_repo.list_for_user(payload.user_id, limit=30)
+        if checkins:
+            prior_mean = _onboarding_prior_mean(payload.onboarding_data)
+            prior_sd = _onboarding_prior_sd(payload.onboarding_data)
+            post = personalize_offset(prior_mean, prior_sd, checkins, RDS_NIGHTTIME_THRESHOLD)
+            personalization = {"offset": post.mean, "band": post.sd, "n_checkins": post.n_checkins}
+
+    result, logs = await run_in_threadpool(_run_prana_pipeline, payload, personalization)
     if not result:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
@@ -144,6 +190,25 @@ async def calculate_current_risk(payload: RiskRequest) -> RiskResponse:
         )
 
     return RiskResponse(result=_serialize_result(result), calculation_log=logs)
+
+
+@app.post("/checkin", response_model=CheckinResponse)
+async def record_checkin(payload: CheckinRequest) -> CheckinResponse:
+    """Record a nightly sleep check-in. These accumulate as the evidence that
+    personalises a user's RDS indoor-offset over time."""
+    checkin_date = payload.checkin_date or datetime.utcnow().date().isoformat()
+    await checkin_repo.add(
+        user_id=payload.user_id,
+        checkin_date=checkin_date,
+        sleep_quality=payload.sleep_quality,
+        outdoor_temp=payload.outdoor_temp,
+        humidity=payload.humidity,
+    )
+    stored = await checkin_repo.list_for_user(payload.user_id, limit=1000)
+    return CheckinResponse(
+        ok=True, user_id=payload.user_id, checkin_date=checkin_date,
+        n_checkins=len(stored),
+    )
 
 
 @app.post("/register", response_model=RegisterResponse)
@@ -173,7 +238,19 @@ async def register(payload: RegisterRequest) -> RegisterResponse:
     )
 
 
-def _run_prana_pipeline(payload: RiskRequest):
+def _onboarding_prior_mean(onboarding_data) -> float:
+    """Prior mean for personalization = the onboarding-derived indoor offset."""
+    from prana.rds_calculator import RDSCalculator
+    return RDSCalculator.compute_onboarding_temp_offset(onboarding_data)
+
+
+def _onboarding_prior_sd(onboarding_data) -> float:
+    """Prior SD for personalization = the onboarding offset band half-width."""
+    from prana.rds_calculator import RDSCalculator
+    return RDSCalculator.compute_band_width(onboarding_data)
+
+
+def _run_prana_pipeline(payload: RiskRequest, personalization=None):
     # Load persisted nighttime temps for this location
     past_temps = load_nighttime_temps(payload.lat, payload.lon)
 
@@ -191,7 +268,11 @@ def _run_prana_pipeline(payload: RiskRequest):
 
     stdout = StringIO()
     with redirect_stdout(stdout):
-        result = prana.update_all(payload.lat, payload.lon, sleep_checkin=payload.sleep_checkin)
+        result = prana.update_all(
+            payload.lat, payload.lon,
+            sleep_checkin=payload.sleep_checkin,
+            personalization=personalization,
+        )
 
     # Persist updated nighttime temps for next call
     if result:

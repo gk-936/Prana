@@ -128,18 +128,23 @@ class CCRICalculator:
     def calculate_ccri(self, ndt, ha_aqi, rds, debug=False):
         """
         Calculate Compound Climate Risk Index
-        
-        CCRI = (H_score x P_score) x (1 + RDS x 0.3)
-        When pollution unavailable: CCRI = H_score x (1 + RDS x 0.3)
-        
-        Multiplicative structure reflects synergistic mortality
-        
+
+        CCRI = base_ccri x recovery_multiplier(RDS)
+          where base_ccri = (H_score x P_score) / 100 when pollution is available,
+          or base_ccri = H_score when pollution is unavailable (neutral pollution).
+
+        The recovery multiplier is piecewise and uncapped (see
+        recovery_score_to_multiplier): 1.0-1.1x for RDS 0-30, up to 1.3x for
+        30-80, up to 1.6x for 80-150, and 1.6x + 0.005 per point above 150.
+
+        Multiplicative structure reflects synergistic mortality.
+
         Args:
             ndt: Neighbourhood Danger Temperature (degC)
             ha_aqi: Heat-Amplified AQI or None if unavailable
             rds: Recovery Debt Score
             debug: If True, print component scores
-        
+
         Returns:
             CCRI value (0-100+) and risk level
         """
@@ -176,11 +181,10 @@ class CCRICalculator:
                 _log.debug("Base CCRI = H (pollution unavailable)")
                 _log.debug("          = %.1f", base_ccri)
             _log.debug("")
-            _log.debug("RDS Multiplier = 1 + (RDS/100) x 0.3")
-            _log.debug("               = 1 + (%.1f/100) x 0.3", rds)
-            _log.debug("               = %.2fx", rds_multiplier)
+            _log.debug("RDS Multiplier = recovery_score_to_multiplier(RDS)  [piecewise, uncapped]")
+            _log.debug("               = %.3fx  (for RDS %.1f)", rds_multiplier, rds)
             _log.debug("")
-            _log.debug("Final CCRI = %.1f x %.2f", base_ccri, rds_multiplier)
+            _log.debug("Final CCRI = %.1f x %.3f", base_ccri, rds_multiplier)
             _log.debug("           = %.1f/100", ccri)
             _log.debug("=" * 60)
         

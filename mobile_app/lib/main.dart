@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import 'models/user_registration.dart';
 import 'screens/dashboard_screen.dart';
 import 'screens/onboarding_screen.dart';
 import 'services/api_client.dart';
@@ -43,15 +44,25 @@ class _RootRouterState extends State<_RootRouter> {
   static const _baseUrl = 'http://10.0.2.2:8000';
   late final PranaApiClient _apiClient = PranaApiClient(baseUrl: _baseUrl);
   bool _showDashboard = false;
+  HomeProfile? _homeProfile;
+  String? _userId;
 
   @override
   Widget build(BuildContext context) {
     if (_showDashboard) {
-      return DashboardScreen(apiClient: _apiClient);
+      return DashboardScreen(
+        apiClient: _apiClient,
+        homeProfile: _homeProfile,
+        userId: _userId,
+      );
     }
     return OnboardingScreen(
       apiClient: _apiClient,
-      onContinue: () => setState(() => _showDashboard = true),
+      onContinue: (profile, userId) => setState(() {
+        _homeProfile = profile;
+        _userId = userId;
+        _showDashboard = true;
+      }),
     );
   }
 }

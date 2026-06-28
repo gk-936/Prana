@@ -1,15 +1,19 @@
 from __future__ import annotations
 
-from typing import Annotated, List
+from typing import List
 
-from pydantic import field_validator
-from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class FrameworkSettings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
-    llm_providers: Annotated[List[str], NoDecode] = ["openrouter", "ollama"]
+    # Stored as a plain comma-separated string rather than a List[str]. This
+    # deliberately avoids pydantic-settings' complex-field JSON auto-decoding,
+    # which differs across versions (the NoDecode annotation that would disable
+    # it only exists in pydantic-settings >= 2.3 and breaks older envs). Read
+    # the parsed list via the `llm_providers` property below.
+    llm_providers_raw: str = "openrouter,ollama"
     openrouter_api_key: str = ""
     openrouter_model: str = ""
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
@@ -29,9 +33,7 @@ class FrameworkSettings(BaseSettings):
     smtp_user: str = ""
     smtp_password: str = ""
 
-    @field_validator("llm_providers", mode="before")
-    @classmethod
-    def _split_csv(cls, v):
-        if isinstance(v, str):
-            return [p.strip() for p in v.split(",") if p.strip()]
-        return v
+    @property
+    def llm_providers(self) -> List[str]:
+        """Parsed provider list from the comma-separated env value."""
+        return [p.strip() for p in self.llm_providers_raw.split(",") if p.strip()]

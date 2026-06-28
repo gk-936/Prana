@@ -48,13 +48,32 @@ OAF_BLEND_WEIGHT = 0.5  # Weight for heat-driven ozone increment blended into ba
 OZONE_HEAT_COUPLING_THRESHOLD_AQI = 50  # Only apply heat factor when O3 AQI >= this (NOx-limited below)
 
 # Recovery Debt Score
-RDS_NIGHTTIME_THRESHOLD = 32.0  # Celsius - no recovery above this
+RDS_NIGHTTIME_THRESHOLD = 32.0  # Celsius - no recovery above this (dry-bulb scale)
 RDS_DECAY_FACTOR = 0.8  # Exponential decay for past nights
 RDS_MAX_DAYS = 7  # Track last 7 nights
-RDS_ONBOARDING_AC_OFFSET = -3.0  # degC: effective indoor temp reduction from AC (PROTOTYPE_ASSUMPTION)
-RDS_ONBOARDING_TIN_ROOF_OFFSET = 2.0  # degC: additional indoor heat from tin roof (PROTOTYPE_ASSUMPTION)
-RDS_ONBOARDING_TOP_FLOOR_OFFSET = 1.5  # degC: additional indoor heat from top floor unshaded (PROTOTYPE_ASSUMPTION)
+
+# --- Indoor temperature offset model (effective sleeping temp vs outdoor) ---
+# Cooling devices (negative = cooler indoors)
+RDS_ONBOARDING_AC_OFFSET = -3.0  # degC: effective indoor temp reduction from AC (PROTOTYPE_ASSUMPTION; AC usage variance is large)
+RDS_ONBOARDING_FAN_OFFSET = -2.0  # degC: equivalent cooling effect of a fan at sleep (~1 m/s airflow, ASHRAE 55 elevated air speed)
+RDS_ONBOARDING_WINDOW_OFFSET = -1.5  # degC: night ventilation / cross-breeze when windows kept open (PROTOTYPE_ASSUMPTION)
+# Building envelope (positive = hotter indoors)
+RDS_ONBOARDING_TIN_ROOF_OFFSET = 2.0  # degC: additional indoor heat from tin roof (PROTOTYPE_ASSUMPTION; effect is nonlinear, overstates at moderate temps)
+RDS_ONBOARDING_TOP_FLOOR_OFFSET = 1.5  # degC: additional indoor heat from top floor unshaded (PROTOTYPE_ASSUMPTION; weak statistical support)
+# Occupancy (positive = hotter indoors from metabolic heat load)
+RDS_ONBOARDING_PER_EXTRA_OCCUPANT_OFFSET = 0.5  # degC per person beyond the first sharing the sleeping room
+
 RDS_INDOOR_OFFSET_BAND_WIDTH = 2.0  # degC, ± band around onboarding offset estimate
+RDS_AC_EXTRA_BAND_WIDTH = 1.5  # degC, additional ± uncertainty when AC present (usage / power-reliability variance)
+
+# Use wet-bulb nighttime temperature (humidity-aware) instead of dry-bulb air
+# temp for the RFU threshold check. The body cannot cool by evaporation when
+# humidity is high, so 32C at 80% RH is far more dangerous than 32C at 40% RH.
+RDS_USE_WET_BULB = True
+# When wet bulb is used the recovery threshold is re-expressed on the wet-bulb
+# scale. Physiological heat-strain literature places uncompensable nighttime
+# heat stress around a wet-bulb of ~28C.
+RDS_NIGHTTIME_WETBULB_THRESHOLD = 28.0  # Celsius - no recovery above this (wet-bulb scale)
 
 # CCRI Thresholds
 CCRI_SAFE = 20

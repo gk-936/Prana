@@ -15,7 +15,11 @@ class OnboardingScreen extends StatefulWidget {
   });
 
   final PranaApiClient apiClient;
-  final VoidCallback onContinue;
+
+  /// Called when the user proceeds to the dashboard. Passes the home profile
+  /// and, when registration completed, the user id so the dashboard can
+  /// request personalised RDS and record sleep check-ins.
+  final void Function(HomeProfile profile, String? userId) onContinue;
 
   @override
   State<OnboardingScreen> createState() => _OnboardingScreenState();
@@ -28,6 +32,9 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   final _lonController = TextEditingController();
 
   bool _ac = false;
+  bool _fan = false;
+  bool _windowsOpen = false;
+  int _occupants = 1;
   String _roofMaterial = 'concrete';
   String _floorLevel = 'ground';
 
@@ -82,6 +89,15 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
     }
   }
 
+  HomeProfile _buildProfile() => HomeProfile(
+        ac: _ac,
+        roofMaterial: _roofMaterial,
+        floorLevel: _floorLevel,
+        fan: _fan,
+        windowsOpen: _windowsOpen,
+        occupants: _occupants,
+      );
+
   Future<void> _register() async {
     final phone = _phoneController.text.trim();
     final lat = double.tryParse(_latController.text.trim());
@@ -105,11 +121,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
           lat: lat,
           lon: lon,
           urbanHeatOffset: null,
-          onboarding: HomeProfile(
-            ac: _ac,
-            roofMaterial: _roofMaterial,
-            floorLevel: _floorLevel,
-          ),
+          onboarding: _buildProfile(),
         ),
       );
       setState(() {
@@ -199,6 +211,20 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                         value: _ac,
                         onChanged: (v) => setState(() => _ac = v),
                       ),
+                      SwitchListTile(
+                        key: const Key('fanSwitch'),
+                        contentPadding: EdgeInsets.zero,
+                        title: const Text('Uses a fan while sleeping'),
+                        value: _fan,
+                        onChanged: (v) => setState(() => _fan = v),
+                      ),
+                      SwitchListTile(
+                        key: const Key('windowsSwitch'),
+                        contentPadding: EdgeInsets.zero,
+                        title: const Text('Keeps windows open at night'),
+                        value: _windowsOpen,
+                        onChanged: (v) => setState(() => _windowsOpen = v),
+                      ),
                       DropdownButtonFormField<String>(
                         key: const Key('roofDropdown'),
                         value: _roofMaterial,
@@ -221,6 +247,21 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                           DropdownMenuItem(value: 'top', child: Text('Top')),
                         ],
                         onChanged: (v) => setState(() => _floorLevel = v ?? 'ground'),
+                      ),
+                      const SizedBox(height: 10),
+                      DropdownButtonFormField<int>(
+                        key: const Key('occupantsDropdown'),
+                        value: _occupants,
+                        decoration: const InputDecoration(
+                          labelText: 'People sleeping in the room',
+                        ),
+                        items: const [
+                          DropdownMenuItem(value: 1, child: Text('1')),
+                          DropdownMenuItem(value: 2, child: Text('2')),
+                          DropdownMenuItem(value: 3, child: Text('3')),
+                          DropdownMenuItem(value: 4, child: Text('4 or more')),
+                        ],
+                        onChanged: (v) => setState(() => _occupants = v ?? 1),
                       ),
                       const SizedBox(height: 16),
                       FilledButton(
@@ -262,7 +303,8 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                               child: const Text('Open WhatsApp'),
                             ),
                             OutlinedButton(
-                              onPressed: widget.onContinue,
+                              onPressed: () =>
+                                  widget.onContinue(_buildProfile(), _result?.userId),
                               child: const Text('Continue to Dashboard'),
                             ),
                           ],

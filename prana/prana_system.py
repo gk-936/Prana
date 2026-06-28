@@ -40,9 +40,15 @@ class PRANASystem:
         self.current_ccri = None
         self.last_update = None
 
-    def update_all(self, lat, lon, sleep_checkin=None, debug=False):
+    def update_all(self, lat, lon, sleep_checkin=None, debug=False, personalization=None):
         """
         Update all climate risk metrics.
+
+        Args:
+            personalization: Optional dict {'offset': float, 'band': float,
+                'n_checkins': int} from the per-user Bayesian personalization
+                layer. When present, the RDS indoor-offset is taken from the
+                user's learned offset instead of the onboarding prior.
 
         Returns:
             Dict with all metrics and alert message
@@ -119,14 +125,26 @@ class PRANASystem:
         if past_days > 0:
             self._backfill_rds_history(forecast)
 
-        tonight_min = self.rds_calculator.estimate_nighttime_temp_from_forecast(forecast)
+        tonight = self.rds_calculator.estimate_nighttime_conditions_from_forecast(forecast)
+        tonight_min = tonight['temp'] if tonight else None
         if tonight_min:
             logger.info("  Tonight's estimated minimum: %.1fC", tonight_min)
-            self.rds_calculator.add_night_temperature(tonight_min)
+            self.rds_calculator.add_night_temperature(
+                tonight_min, humidity=tonight.get('humidity')
+            )
 
-        raw_rds_dict = self.rds_calculator.calculate_rds(debug=debug)
+        raw_rds_dict = self.rds_calculator.calculate_rds(
+            debug=debug,
+            personalized_offset=(personalization.get('offset') if personalization else None),
+            personalized_band=(personalization.get('band') if personalization else None),
+        )
         rds_dict, rds_adjustment = self.rds_calculator.apply_sleep_checkin_adjustment(raw_rds_dict, sleep_checkin)
         self.current_rds = rds_dict['rds_mid']
+        if personalization:
+            logger.info("RDS personalized from %s check-in(s): offset %.1fC (band ±%.1f)",
+                        personalization.get('n_checkins', 0),
+                        personalization.get('offset', 0.0),
+                        personalization.get('band', 0.0))
 
         rds_message, rds_color = self.rds_calculator.get_rds_message(rds_dict, tonight_min)
         if rds_adjustment['applied']:
@@ -185,6 +203,7 @@ class PRANASystem:
             'rds': rds_dict,
             'raw_rds': raw_rds_dict,
             'rds_adjustment': rds_adjustment,
+            'personalization': personalization,
             'consecutive_nights': rds_dict['consecutive_nights'],
             'rds_message': rds_message,
             'ccri': ccri,
@@ -216,9 +235,14 @@ class PRANASystem:
         )
 
     def _backfill_rds_history(self, forecast):
-        """Extract past nights' minimum temps from forecast data and seed RDS."""
+        """Extract past nights' minimum temps from forecast data and seed RDS.
+
+        For each past night we record the minimum dry-bulb temperature and the
+        humidity at that same hour, so RDS can score the night on the wet-bulb
+        scale.
+        """
         from collections import defaultdict
-        nights = defaultdict(list)
+        nights = defaultdict(list)  # night_key -> list of (temp, humidity)
         now = datetime.now()
 
         for item in forecast:
@@ -230,13 +254,16 @@ class PRANASystem:
             # Night hours: 10 PM to 6 AM
             if hour >= 22 or hour <= 6:
                 night_key = ts.date() if hour <= 6 else ts.date() - timedelta(days=1)
-                nights[night_key].append(item['temp'])
+                nights[night_key].append((item['temp'], item.get('humidity')))
 
         past_count = 0
         for date in sorted(nights.keys()):
-            night_min = min(nights[date])
+            # Coldest reading of the night, with the humidity recorded at that hour
+            night_min_temp, night_min_humidity = min(nights[date], key=lambda x: x[0])
             if not any(n['date'] == date for n in self.rds_calculator.nighttime_temps):
-                self.rds_calculator.add_night_temperature(night_min, date)
+                self.rds_calculator.add_night_temperature(
+                    night_min_temp, date, humidity=night_min_humidity
+                )
                 past_count += 1
 
         if past_count:

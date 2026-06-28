@@ -45,9 +45,18 @@ void main() {
       client: fakeClient,
     );
 
+    // The onboarding form is taller than the default 800x600 test surface
+    // (phone, location, GPS, six home-profile controls, register button).
+    // Enlarge the surface so the whole form is on-screen and the register
+    // button is reliably hit-testable without scrolling.
+    tester.view.physicalSize = const Size(1000, 2200);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
     await tester.pumpWidget(
       MaterialApp(
-        home: OnboardingScreen(apiClient: apiClient, onContinue: () {}),
+        home: OnboardingScreen(apiClient: apiClient, onContinue: (_, __) {}),
       ),
     );
 
@@ -72,6 +81,10 @@ void main() {
     expect(sentBody['onboarding']['ac'], false);
     expect(sentBody['onboarding']['roof_material'], 'concrete');
     expect(sentBody['onboarding']['floor_level'], 'ground');
+    // New home-profile fields must be present in the registration payload.
+    expect(sentBody['onboarding']['fan'], false);
+    expect(sentBody['onboarding']['windows_open'], false);
+    expect(sentBody['onboarding']['occupants'], 1);
 
     expect(find.text('Open WhatsApp'), findsOneWidget);
     expect(find.text('Continue to Dashboard'), findsOneWidget);

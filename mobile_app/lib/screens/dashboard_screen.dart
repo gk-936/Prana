@@ -1,12 +1,21 @@
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
 
+import '../models/user_registration.dart';
 import '../services/api_client.dart';
+import 'checkin_screen.dart';
 
 class DashboardScreen extends StatefulWidget {
-  const DashboardScreen({super.key, required this.apiClient});
+  const DashboardScreen({
+    super.key,
+    required this.apiClient,
+    this.homeProfile,
+    this.userId,
+  });
 
   final PranaApiClient apiClient;
+  final HomeProfile? homeProfile;
+  final String? userId;
 
   @override
   State<DashboardScreen> createState() => _DashboardScreenState();
@@ -72,6 +81,24 @@ class _DashboardScreenState extends State<DashboardScreen> {
     }
   }
 
+  Future<void> _openCheckin() async {
+    final userId = widget.userId;
+    if (userId == null) {
+      setState(() => _statusMessage =
+          'Register first to record sleep check-ins and personalise your score.');
+      return;
+    }
+    final recorded = await Navigator.of(context).push<bool>(
+      MaterialPageRoute(
+        builder: (_) => CheckinScreen(apiClient: widget.apiClient, userId: userId),
+      ),
+    );
+    // After a check-in, refresh risk so the personalised RDS shows immediately.
+    if (recorded == true && mounted) {
+      await _calculateRisk();
+    }
+  }
+
   Future<void> _calculateRisk() async {
     final lat = double.tryParse(_latController.text.trim());
     final lon = double.tryParse(_lonController.text.trim());
@@ -95,6 +122,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
         lon: lon,
         locationName: _locationController.text.trim(),
         urbanHeatOffset: heatOffset,
+        onboarding: widget.homeProfile,
+        userId: widget.userId,
       );
 
       setState(() {
@@ -115,6 +144,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
       appBar: AppBar(
         title: const Text('PRANA'),
         actions: [
+          IconButton(
+            onPressed: _openCheckin,
+            tooltip: 'Sleep check-in',
+            icon: const Icon(Icons.bedtime_outlined),
+          ),
           IconButton(
             onPressed: _loadingRisk ? null : _calculateRisk,
             tooltip: 'Refresh risk',
@@ -287,11 +321,28 @@ class _CurrentRiskPanel extends StatelessWidget {
                   value: '${_format(result!['ndt'])} C',
                 ),
                 _MetricTile(label: 'HA-AQI', value: _format(result!['ha_aqi'])),
-                _MetricTile(label: 'RDS', value: _format(result!['rds'])),
+                _MetricTile(label: 'RDS', value: _formatRds(result!['rds'])),
               ],
             ),
             const SizedBox(height: 12),
             Text('Risk: ${result!['risk_level'] ?? 'Unknown'}'),
+            if (_isPersonalized(result!['rds'])) ...[
+              const SizedBox(height: 6),
+              Row(
+                children: [
+                  Icon(Icons.person,
+                      size: 16, color: Theme.of(context).colorScheme.primary),
+                  const SizedBox(width: 4),
+                  Text(
+                    'Recovery score personalised from your sleep check-ins',
+                    style: TextStyle(
+                      color: Theme.of(context).colorScheme.primary,
+                      fontSize: 12,
+                    ),
+                  ),
+                ],
+              ),
+            ],
             const SizedBox(height: 8),
             Text(result!['alert_message']?.toString() ?? ''),
           ],
@@ -375,4 +426,28 @@ String _format(Object? value) {
     return value.toStringAsFixed(1);
   }
   return value.toString();
+}
+
+/// True when the RDS band dict was produced from per-user check-ins.
+bool _isPersonalized(Object? rds) {
+  return rds is Map && rds['personalized'] == true;
+}
+
+/// RDS arrives as a band dict {rds_low, rds_mid, rds_high, consecutive_nights}.
+/// Show the mid value, with the low-high range when it spans a meaningful gap.
+String _formatRds(Object? value) {
+  if (value == null) return 'N/A';
+  if (value is num) return value.toStringAsFixed(1); // legacy scalar safety
+  if (value is Map) {
+    final mid = value['rds_mid'];
+    final low = value['rds_low'];
+    final high = value['rds_high'];
+    if (mid is num) {
+      if (low is num && high is num && (high - low) >= 1.0) {
+        return '${mid.toStringAsFixed(0)} (${low.toStringAsFixed(0)}-${high.toStringAsFixed(0)})';
+      }
+      return mid.toStringAsFixed(1);
+    }
+  }
+  return 'N/A';
 }

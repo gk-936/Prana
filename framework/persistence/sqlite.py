@@ -23,6 +23,19 @@ CREATE TABLE IF NOT EXISTS users (
 )
 """
 
+_CHECKINS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS checkins (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id TEXT NOT NULL,
+    checkin_date TEXT NOT NULL,
+    sleep_quality TEXT,
+    outdoor_temp REAL,
+    humidity REAL,
+    created_at TEXT,
+    UNIQUE(user_id, checkin_date)
+)
+"""
+
 
 class SQLiteUserRepository:
     def __init__(self, db_path: str):
@@ -91,3 +104,63 @@ class SQLiteUserRepository:
                  user.role, user.locale, datetime.now(timezone.utc).isoformat(),
                  1 if m.get("verified") else 0),
             )
+
+
+class SQLiteCheckinRepository:
+    """Stores per-user nightly sleep check-ins, the evidence the personalization
+    layer consumes. Shares the same SQLite file as the user repository."""
+
+    def __init__(self, db_path: str):
+        self.db_path = db_path.replace("sqlite:///", "").replace("sqlite://", "")
+        with self._conn() as c:
+            c.execute(_CHECKINS_SCHEMA)
+
+    def _conn(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        return conn
+
+    async def add(self, user_id: str, checkin_date: str, sleep_quality: str | None,
+                  outdoor_temp: float | None, humidity: float | None) -> None:
+        await asyncio.to_thread(
+            self._add, user_id, checkin_date, sleep_quality, outdoor_temp, humidity
+        )
+
+    def _add(self, user_id: str, checkin_date: str, sleep_quality: str | None,
+             outdoor_temp: float | None, humidity: float | None) -> None:
+        # One check-in per user per night; a later report for the same date
+        # overwrites the earlier one (last write wins).
+        with self._conn() as c:
+            c.execute(
+                """INSERT INTO checkins
+                   (user_id, checkin_date, sleep_quality, outdoor_temp, humidity, created_at)
+                   VALUES (?,?,?,?,?,?)
+                   ON CONFLICT(user_id, checkin_date) DO UPDATE SET
+                     sleep_quality=excluded.sleep_quality,
+                     outdoor_temp=excluded.outdoor_temp,
+                     humidity=excluded.humidity,
+                     created_at=excluded.created_at""",
+                (user_id, checkin_date, sleep_quality, outdoor_temp, humidity,
+                 datetime.now(timezone.utc).isoformat()),
+            )
+
+    async def list_for_user(self, user_id: str, limit: int = 30) -> list[dict]:
+        return await asyncio.to_thread(self._list_for_user, user_id, limit)
+
+    def _list_for_user(self, user_id: str, limit: int) -> list[dict]:
+        with self._conn() as c:
+            rows = c.execute(
+                """SELECT checkin_date, sleep_quality, outdoor_temp, humidity
+                   FROM checkins WHERE user_id=?
+                   ORDER BY checkin_date DESC LIMIT ?""",
+                (user_id, limit),
+            ).fetchall()
+        return [
+            {
+                "checkin_date": r["checkin_date"],
+                "sleep_quality": r["sleep_quality"],
+                "outdoor_temp": r["outdoor_temp"],
+                "humidity": r["humidity"],
+            }
+            for r in rows
+        ]
