@@ -10,8 +10,11 @@ from framework.tools.base import ToolRegistry
 
 _DEFAULT_SYSTEM = (
     "You are a helpful assistant for {name} (locale={locale}). "
-    "You have no data of your own. To answer anything about the user or their data "
-    "you MUST call a tool. Never invent numbers or facts."
+    "For greetings, small talk, or general questions, reply directly and "
+    "conversationally WITHOUT calling a tool. "
+    "Only when the user asks about their own data (e.g. their risk, heat, air "
+    "quality, or sleep) must you call a tool to get it — you have no such data "
+    "of your own, so never invent numbers or facts about the user."
 )
 _FALLBACK_ANSWER = (
     "I'm having trouble completing that request right now. Please try again shortly."
